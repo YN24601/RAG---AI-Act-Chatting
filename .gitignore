@@ -1,0 +1,14 @@
+# Environment
+.env
+.venv/
+__pycache__/
+*.pyc
+
+# Derived data (regenerable from data/raw via scripts/run_ingestion.py)
+data/processed/
+
+# OS / editor
+.DS_Store
+
+# others
+方案/
