@@ -41,13 +41,26 @@ def token_len(text: str) -> int:
     return len(_encoder().encode(text))
 
 
-def _splitter() -> RecursiveCharacterTextSplitter:
+def _splitter(chunk_size: int = CHUNK_SIZE) -> RecursiveCharacterTextSplitter:
     return RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
+        chunk_size=chunk_size,
         chunk_overlap=CHUNK_OVERLAP,
         length_function=token_len,
         separators=["\n\n", "\n", ". ", " ", ""],
     )
+
+
+def _context_header(u: LegalUnit) -> str:
+    """A short self-contained prefix so a (sub-)chunk's text reveals its origin.
+
+    Prepended to the embedded text so the embedding model — which sees only the
+    text, never the metadata — knows which clause a fragment belongs to.
+    """
+    label = {"recital": "Recital", "article": "Article", "annex": "Annex"}[u.unit_type]
+    head = f"{label} {u.number}"
+    if u.title:
+        head += f" — {u.title}"
+    return head
 
 
 def chunk_baseline(units: List[LegalUnit]) -> List[Chunk]:
@@ -66,34 +79,43 @@ def chunk_baseline(units: List[LegalUnit]) -> List[Chunk]:
 
 
 def chunk_structure(units: List[LegalUnit]) -> List[Chunk]:
-    """Structure-aware: 1 chunk per unit; sub-split only oversized units."""
-    splitter = _splitter()
+    """Structure-aware: 1 chunk per unit; sub-split only oversized units.
+
+    Each chunk's text is prefixed with a context header (e.g. "Article 6 —
+    Classification rules…") so fragments stay self-contained for retrieval.
+    Token room for the header is reserved so chunks still fit CHUNK_SIZE.
+    """
     chunks: List[Chunk] = []
     for u in units:
+        header = _context_header(u)
+        prefix = f"{header}\n\n"
+        budget = max(128, CHUNK_SIZE - token_len(prefix))
         base_meta = {
             "unit_type": u.unit_type,
             "number": u.number,
+            "number_int": u.number_int,
             "title": u.title,
             "chapter": u.chapter,
             "section": u.section,
+            "context_header": header,
             "source_url": SOURCE_URL,
             "version": VERSION,
         }
-        if token_len(u.text) <= CHUNK_SIZE:
+        if token_len(u.text) <= budget:
             chunks.append(
                 Chunk(
                     chunk_id=u.unit_id,
-                    text=u.text,
+                    text=prefix + u.text,
                     strategy="structure",
                     metadata={**base_meta, "sub_index": 0},
                 )
             )
         else:
-            for j, piece in enumerate(splitter.split_text(u.text)):
+            for j, piece in enumerate(_splitter(budget).split_text(u.text)):
                 chunks.append(
                     Chunk(
                         chunk_id=f"{u.unit_id}#s{j}",
-                        text=piece,
+                        text=prefix + piece,
                         strategy="structure",
                         metadata={**base_meta, "sub_index": j},
                     )

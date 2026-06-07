@@ -37,7 +37,8 @@ class LegalUnit(BaseModel):
 
     unit_id: str  # e.g. "article-6", "recital-14", "annex-III"
     unit_type: UnitType
-    number: str  # "6", "14", "III"
+    number: str  # display form: "6", "14", "III"
+    number_int: Optional[int] = None  # numeric form for range filtering/sorting (annex roman -> int)
     title: Optional[str] = None  # article subtitle / annex descriptive title
     chapter: Optional[str] = None  # e.g. "CHAPTER III — HIGH-RISK AI SYSTEMS"
     section: Optional[str] = None  # e.g. "SECTION 1 — Classification ..."

@@ -29,6 +29,22 @@ from .schema import (
     LegalUnit,
 )
 
+_ROMAN = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+
+
+def _roman_to_int(s: str) -> Optional[int]:
+    """Convert a Roman numeral (annex id) to int; None if not parseable."""
+    s = s.strip().upper()
+    if not s or any(c not in _ROMAN for c in s):
+        return None
+    total, prev = 0, 0
+    for c in reversed(s):
+        v = _ROMAN[c]
+        total += -v if v < prev else v
+        prev = max(prev, v)
+    return total
+
+
 _RCT_ID = re.compile(r"^rct_\d+$")
 _ART_ID = re.compile(r"^art_\d+$")
 _ANX_ID = re.compile(r"^anx_")
@@ -74,7 +90,13 @@ def _parse_recitals(soup: BeautifulSoup) -> List[LegalUnit]:
         text = _clean_text(div)
         text = re.sub(r"^\(\s*\d+\s*\)\s*", "", text)  # strip leading "(N)" marker
         units.append(
-            LegalUnit(unit_id=f"recital-{number}", unit_type="recital", number=number, text=text)
+            LegalUnit(
+                unit_id=f"recital-{number}",
+                unit_type="recital",
+                number=number,
+                number_int=int(number),
+                text=text,
+            )
         )
     return units
 
@@ -102,6 +124,7 @@ def _parse_articles(soup: BeautifulSoup) -> List[LegalUnit]:
                 unit_id=f"article-{number}",
                 unit_type="article",
                 number=number,
+                number_int=int(number),
                 title=title,
                 chapter=chapter,
                 section=section,
@@ -128,6 +151,7 @@ def _parse_annexes(soup: BeautifulSoup) -> List[LegalUnit]:
                 unit_id=f"annex-{number}",
                 unit_type="annex",
                 number=number,
+                number_int=_roman_to_int(number),
                 title=title,
                 text=text,
             )

@@ -38,7 +38,7 @@ def test_unit_counts_match_expected():
 def test_articles_have_number_and_chapter():
     units = _load_jsonl(UNITS_PATH)
     articles = [u for u in units if u["unit_type"] == "article"]
-    assert articles
+    assert articles, "no articles found"
     for a in articles:
         assert a["number"], f"article missing number: {a['unit_id']}"
         assert a["chapter"], f"article missing chapter: {a['unit_id']}"
@@ -66,3 +66,19 @@ def test_structure_chunks_carry_article_metadata():
     for c in article_chunks:
         assert c["metadata"].get("number")
         assert c["metadata"].get("chapter")
+        assert isinstance(c["metadata"].get("number_int"), int)
+
+
+def test_structure_chunks_are_self_contained():
+    """Each structure chunk must carry its context header in metadata AND text."""
+    structure = _load_jsonl(CHUNKS_STRUCTURE_PATH)
+    for c in structure:
+        header = c["metadata"].get("context_header")
+        assert header, f"missing context_header: {c['chunk_id']}"
+        assert c["text"].startswith(header), f"header not prefixed in text: {c['chunk_id']}"
+
+
+def test_unit_numbers_are_sortable():
+    units = _load_jsonl(UNITS_PATH)
+    for u in units:
+        assert isinstance(u.get("number_int"), int), f"{u['unit_id']} missing number_int"

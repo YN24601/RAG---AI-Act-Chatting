@@ -34,21 +34,32 @@ pytest -q                              # sanity 检查
 | 策略 | 切法 | metadata | 定位 |
 | --- | --- | --- | --- |
 | `baseline` | 全文拉平后固定 ~512 token + 64 overlap | 仅 source/version/index | 基线（固定size） |
-| `structure` | 每个 recital/article/annex 一个 chunk；超长再 sub-split | unit_type / number / title / chapter / section / sub_index | 保住条款完整性与按条款检索 |
+| `structure` | 每个 recital/article/annex 一个 chunk；超长再 sub-split | unit_type / number / **number_int** / title / chapter / section / sub_index / **context_header** | 保住条款完整性与按条款检索 |
 
 token 数用 `tiktoken` cl100k 仅作尺寸代理（Mistral 分词器不同，不影响切分控制）。
 
+- **`number_int`**：条款号的数值形式（annex 罗马数字也转 int），供 Day 3-4 按条款号区间过滤/排序（字符串 `'10' < '2'` 会错乱）。
+- **`context_header`**：每个 structure chunk 的文本前置 `"Article 6 — Classification…"` 这类自含前缀（同时存入 metadata），让只看文本、看不到 metadata 的 embedding 模型也知道碎片归属。已预留 token 预算，chunk 仍 ≤512。
+
+
+```
 === chunking comparison (tiktoken cl100k tokens) ===
 strategy    chunks    mean  median    p95
 -----------------------------------------
 baseline       301   355.3     393    510
-structure      402   265.1   227.0    509
+structure      408   270.5   233.5    508
+```
 
 ### baseline 的一个隐性缺陷：overlap 并非均匀生效
 
-`baseline` 名义上带 `chunk_overlap=64`，但实测 300 对相邻 chunk 中**只有 18 对真正共享重叠，282 对是零重叠硬切**。原因是 `RecursiveCharacterTextSplitter` 的 overlap 以"切分片段"为单位回退：单元间用 `\n\n` 切出的是**整条 recital/article**（200–500 token，远大于 64），换块时整条被弹出 → 边界硬切无重叠；只有**超长单元内部**被递归切成句子级小片段时，才留得下 ≈64 token 的重叠尾巴。
+`baseline` 名义上带 `chunk_overlap=64`，但实测 300 对相邻 chunk 中**只有 18 对真正共享重叠，282 对是零重叠硬切**。原因是 chunk_overlap（重叠视窗）与 semantic boundary（语义边界，如 \n\n）之间的底层算法博弈导致的静默失效；当文本中出现长度超过重叠上限的巨大自然段落时，`RecursiveCharacterTextSplitter` 为了不破坏该段落的完整性，只能被迫放弃相邻 chunk 之间的 overlap，从而在长文本的切分中留下不可预知的 context 断层。
 
 即"块块有缓冲"是错觉——重叠只在长条款内部生效，条款与条款之间是零重叠硬切，短条款的语境因此易被邻居挤入同一块又被硬边界截断。这正是 `structure`（按条款对齐边界）有望在 context precision 上胜出的机制性原因，留待 Day 8-9 RAGAS 验证。
+
+### 已知限制（设计取舍，留待后续阶段）
+
+- **baseline 无条款级 metadata**（仅 `chunk_index/source_url/version`）。这是对照实验的本意——baseline 故意丢结构、无法做条款级溯源。因此 **Day 10-11 合规层的 source attribution 只能建立在 `structure` 集上**，不要在 baseline 上做条款引用；评测时也应预期 baseline 在 attribution 维度天然为 0。
+- **缺段落级（paragraph）粒度**。`structure` 的 chunk 知道是 Article 6，但不区分 6(1)/6(2)。chunk 文本内保留了 `1./2.` 内联编号、可事后恢复，但 metadata 未拆到子段。若 Day 10-11 需要把引用精确到 `Art 6(2)`，再补段落级抽取即可。
 
 ## 目录
 
