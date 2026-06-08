@@ -20,8 +20,11 @@
 ```bash
 conda env create -f environment.yml
 conda activate aiact-rag
-python scripts/run_ingestion.py        # fetch -> parse -> chunk
-pytest -q                              # sanity 检查
+cp .env.example .env                   # 填入 MISTRAL_API_KEY / QDRANT_URL / QDRANT_API_KEY
+python scripts/run_ingestion.py        # Day 1-2: fetch -> parse -> chunk
+python scripts/build_index.py          # Day 3-4: embed (Mistral) -> 索引到 Qdrant
+python scripts/query.py "What AI practices are prohibited?"   # 检索
+pytest -q                              # sanity 检查（不联网）
 ```
 
 产物（`data/processed/`，由原始 HTML 可复现，故 gitignore）：
@@ -61,20 +64,39 @@ structure      408   270.5   233.5    508
 - **baseline 无条款级 metadata**（仅 `chunk_index/source_url/version`）。这是对照实验的本意——baseline 故意丢结构、无法做条款级溯源。因此 **Day 10-11 合规层的 source attribution 只能建立在 `structure` 集上**，不要在 baseline 上做条款引用；评测时也应预期 baseline 在 attribution 维度天然为 0。
 - **缺段落级（paragraph）粒度**。`structure` 的 chunk 知道是 Article 6，但不区分 6(1)/6(2)。chunk 文本内保留了 `1./2.` 内联编号、可事后恢复，但 metadata 未拆到子段。若 Day 10-11 需要把引用精确到 `Art 6(2)`，再补段落级抽取即可。
 
+## 检索（Day 3-4）
+
+- **Embedding**：Mistral `mistral-embed`（1024 维，全欧洲栈）。
+- **向量库**：Qdrant Cloud，两套 chunk 各建一个 collection（`aiact_baseline` / `aiact_structure`），便于 Day 8-9 直接对比检索质量。点 id 用 `uuid5(chunk_id)` 确定性生成，重建即 upsert 不产生重复。
+- **检索**：向量召回 top-k（默认 20）→ **rerank 插槽（本版为 identity passthrough，已预留 Cohere）** → top-n（默认 5）。支持按 `unit_type` 等 metadata 过滤（Qdrant 需对 payload 字段建索引，已在建库时自动创建 `unit_type/strategy/number_int` 索引）。
+
+```bash
+python scripts/build_index.py                          # 索引两套（--recreate 强制重建）
+python scripts/query.py "prohibited AI practices" --strategy structure
+python scripts/query.py "high-risk classification" --unit-type article --top-n 5
+```
+
+**structure vs baseline（同一问题「What are the prohibited AI practices?」）**：
+- `structure`：Top-4 全部命中 **Article 5**，带 `context_header` + 章节，可直接溯源引用，全为有约束力的正文。
+- `baseline`：#1 命中正确内容但只是 `chunk 126`（无条款号）；#2-#4 落到 **Recital（非约束性前言）**，且无 metadata 可区分——印证了「丢结构」的代价。
+- 越界问题（"chocolate cake"）得分 ~0.62 vs 在范围内 0.85+，分离明显，可作 Day 5 低置信度拒答的阈值依据。
+
+
 ## 目录
 
 ```
 data/raw/         原始 HTML 快照 + fetch 元数据（提交）
 data/processed/   解析与切分产物（gitignore，可复现）
 src/ingestion/    schema / fetch / parse / chunk
-scripts/          run_ingestion.py 编排入口
-tests/            pytest sanity 断言
+src/retrieval/    config / embeddings / index / retriever（Qdrant + Mistral）
+scripts/          run_ingestion.py · build_index.py · query.py
+tests/            pytest sanity 断言（ingestion + retrieval，不联网）
 ```
 
 ## 路线图
 
-- [x] **Day 1-2**：数据摄取与预处理（本阶段）
-- [ ] Day 3-4：Embedding（Mistral）+ Qdrant 索引 + 检索/rerank
+- [x] **Day 1-2**：数据摄取与预处理
+- [x] **Day 3-4**：Embedding（Mistral）+ Qdrant 索引 + 向量检索（rerank 插槽预留）
 - [ ] Day 5：LangGraph 编排 + LangSmith tracing
 - [ ] Day 6-7：FastAPI + Docker
 - [ ] Day 8-9：RAGAS 评测 + MLflow
