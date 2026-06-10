@@ -67,13 +67,14 @@ structure      408   270.5   233.5    508
 ## 检索（Day 3-4）
 
 - **Embedding**：Mistral `mistral-embed`（1024 维，全欧洲栈）。
-- **向量库**：Qdrant Cloud，两套 chunk 各建一个 collection（`aiact_baseline` / `aiact_structure`），便于 Day 8-9 直接对比检索质量。点 id 用 `uuid5(chunk_id)` 确定性生成，重建即 upsert 不产生重复。
-- **检索**：向量召回 top-k（默认 20）→ **rerank 插槽（本版为 identity passthrough，已预留 Cohere）** → top-n（默认 5）。支持按 `unit_type` 等 metadata 过滤（Qdrant 需对 payload 字段建索引，已在建库时自动创建 `unit_type/strategy/number_int` 索引）。
+- **向量库**：Qdrant Cloud，两套 chunk 各建一个 collection（`aiact_baseline` / `aiact_structure`），便于 Day 8-9 直接对比检索质量。点 id 用 `uuid5(chunk_id)` 确定性生成，重建即 upsert 不产生重复。维度/距离由 `config.EMBED_DIM/DISTANCE` 显式驱动并在建库时校验。
+- **幂等**：以 chunk 文件的 **sha256 内容指纹**（记于 `data/processed/.index_meta.json`）判断是否需要重建——内容变了即使条数不变也会自动重建，避免留下旧向量；`--recreate` 强制重建。
+- **检索**：向量召回 top-k（默认 20）→ **rerank 插槽（本版为 identity passthrough，已预留 Cohere）** → top-n（默认 5）。支持 `unit_type` + 条款号区间（`number_int`）组合过滤与 `min_score` 阈值（Qdrant 对 payload 字段 `unit_type/number_int` 自动建索引）。
 
 ```bash
 python scripts/build_index.py                          # 索引两套（--recreate 强制重建）
 python scripts/query.py "prohibited AI practices" --strategy structure
-python scripts/query.py "high-risk classification" --unit-type article --top-n 5
+python scripts/query.py "high-risk" --unit-type article --number-min 6 --number-max 15 --min-score 0.8
 ```
 
 **structure vs baseline（同一问题「What are the prohibited AI practices?」）**：
@@ -81,6 +82,9 @@ python scripts/query.py "high-risk classification" --unit-type article --top-n 5
 - `baseline`：#1 命中正确内容但只是 `chunk 126`（无条款号）；#2-#4 落到 **Recital（非约束性前言）**，且无 metadata 可区分——印证了「丢结构」的代价。
 - 越界问题（"chocolate cake"）得分 ~0.62 vs 在范围内 0.85+，分离明显，可作 Day 5 低置信度拒答的阈值依据。
 
+### Future work：Hybrid 检索（dense + sparse）
+
+纯 dense 检索对**精确术语/条款号**（"deployer"、"general-purpose AI model"、"Article 5(1)(h)"）的关键词匹配易漏，而这在法律问答里很关键。Qdrant + langchain-qdrant 原生支持 `RetrievalMode.HYBRID`（FastEmbed 稀疏向量，如 BM25/SPLADE），可把 dense 语义召回与 sparse 关键词召回融合。计划在 Day 8-9 作为评测表又一行（dense vs hybrid）评估收益后再决定接入——需加 `fastembed` 依赖并重建带稀疏向量的 collection。
 
 ## 目录
 

@@ -24,17 +24,38 @@ def main() -> None:
     ap.add_argument("--k", type=int, default=DEFAULT_K, help="vector recall depth")
     ap.add_argument("--top-n", type=int, default=DEFAULT_TOP_N, help="results to show")
     ap.add_argument("--unit-type", choices=["recital", "article", "annex"], default=None)
+    ap.add_argument("--number-min", type=int, default=None, help="min article/recital number")
+    ap.add_argument("--number-max", type=int, default=None, help="max article/recital number")
+    ap.add_argument("--min-score", type=float, default=None, help="drop hits below this score")
     args = ap.parse_args()
 
     query = " ".join(args.query)
     retriever = Retriever(strategy=args.strategy, k=args.k)
-    hits = retriever.search(query, k=args.k, top_n=args.top_n, unit_type=args.unit_type)
+    hits = retriever.search(
+        query,
+        k=args.k,
+        top_n=args.top_n,
+        unit_type=args.unit_type,
+        number_min=args.number_min,
+        number_max=args.number_max,
+        min_score=args.min_score,
+    )
 
     print(f"\nquery     : {query}")
     print(f"collection: {args.strategy}  (recall k={args.k}, showing top {args.top_n})")
+    filters = []
     if args.unit_type:
-        print(f"filter    : unit_type == {args.unit_type}")
+        filters.append(f"unit_type=={args.unit_type}")
+    if args.number_min is not None or args.number_max is not None:
+        filters.append(f"number_int in [{args.number_min}, {args.number_max}]")
+    if args.min_score is not None:
+        filters.append(f"score>={args.min_score}")
+    if filters:
+        print(f"filter    : {'  '.join(filters)}")
     print("=" * 78)
+    if not hits:
+        print("\n(no results above the given constraints)\n")
+        return
     for h in hits:
         m = h.metadata
         loc = m.get("context_header") or f"chunk {m.get('chunk_index')}"

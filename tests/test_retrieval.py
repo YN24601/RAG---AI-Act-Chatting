@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from retrieval import config  # noqa: E402
 from retrieval.index import to_documents  # noqa: E402
+from retrieval.retriever import build_filter  # noqa: E402
 
 _CHUNKS = [
     {"chunk_id": "article-6", "text": "Article 6 — …", "strategy": "structure",
@@ -38,3 +39,29 @@ def test_point_ids_are_deterministic():
     ids_b = to_documents(_CHUNKS)[1]
     assert ids_a == ids_b
     assert len(set(ids_a)) == 2  # distinct chunk_ids -> distinct ids
+
+
+def test_build_filter_none_when_no_constraints():
+    assert build_filter() is None
+
+
+def test_build_filter_unit_type_only():
+    f = build_filter(unit_type="article")
+    assert len(f.must) == 1
+    cond = f.must[0]
+    assert cond.key == "metadata.unit_type"
+    assert cond.match.value == "article"
+
+
+def test_build_filter_number_range_only():
+    f = build_filter(number_min=6, number_max=15)
+    assert len(f.must) == 1
+    cond = f.must[0]
+    assert cond.key == "metadata.number_int"
+    assert cond.range.gte == 6 and cond.range.lte == 15
+
+
+def test_build_filter_combines_unit_type_and_range():
+    f = build_filter(unit_type="article", number_min=6)
+    keys = {c.key for c in f.must}
+    assert keys == {"metadata.unit_type", "metadata.number_int"}
