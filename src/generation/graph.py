@@ -64,12 +64,26 @@ def grade(state: RAGState) -> RAGState:
     return {"grade": "relevant", "grade_reason": "passed score gate"}
 
 
+def finalize_answer(raw: str) -> tuple[str, bool]:
+    """Map raw generation output to (answer, refused).
+
+    The answer model emits INSUFFICIENT_SENTINEL when the context can't support an
+    answer. We map that to the canonical (verbatim) REFUSAL_TEXT and refused=True,
+    so an in-generation refusal is guaranteed word-for-word and correctly flagged
+    — never an LLM-paraphrased refusal silently labeled as a successful answer.
+    """
+    if config.INSUFFICIENT_SENTINEL in raw.upper():
+        return config.REFUSAL_TEXT, True
+    return raw, False
+
+
 def generate(state: RAGState) -> RAGState:
     chain = ANSWER_PROMPT | get_chat_llm() | StrOutputParser()
-    answer = chain.invoke(
+    raw = chain.invoke(
         {"question": state["question"], "context": format_context(state["hits"])}
     )
-    return {"answer": answer, "refused": False}
+    answer, refused = finalize_answer(raw)
+    return {"answer": answer, "refused": refused}
 
 
 def refuse(state: RAGState) -> RAGState:

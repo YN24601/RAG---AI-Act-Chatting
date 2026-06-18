@@ -99,8 +99,8 @@ START → retrieve → grade ─(relevant)→ generate → END
 - **grade 两层**（`src/generation/grade.py`）：
   1. **score 阈值**（`GRADE_MIN_SCORE=0.65`，纯函数 `score_gate`）：top hit 低于阈值直接拒答，**不花 LLM 调用**。阈值取自 Day 3-4 实测分离（在范围内 ≥0.72，越界 ~0.62）。
   2. **LLM 复核**（过阈值后）：Mistral 用 `with_structured_output` 二分判定 context 是否真能回答（CRAG/self-RAG 风格），输出 `relevant + reason`。
-- **Grounded generation**（`src/generation/prompts.py` `ANSWER_PROMPT`）三条硬约束：① 只用提供的 context；② 每条结论标注 Article/Annex/Recital 号（取自 `context_header`）；③ context 不足时逐字输出 `REFUSAL_TEXT`，不编造。
-- **拒答确定性**：`refuse` 节点直接写死 `REFUSAL_TEXT`，不交给 LLM 措辞（零幻觉风险）。生成模型 `mistral-small-latest`、温度 0，均走 `src/generation/config.py`。
+- **Grounded generation**（`src/generation/prompts.py` `ANSWER_PROMPT`）硬约束：① 只用提供的 context；② 每条结论标注 Article/Annex/Recital 号（取自 `context_header`）；③ recital 是非约束性材料，只有 recital 命中时可据其作答但须注明「非约束性」；④ context 确实无依据时**只输出哨兵 `INSUFFICIENT_CONTEXT`**（不让 LLM 自己复述拒答语）。
+- **拒答确定性（两条路径都逐字）**：`refuse` 节点写死 `REFUSAL_TEXT`；generate 内 LLM 判不足时只吐哨兵，由纯函数 `finalize_answer` 映射成同一份 `REFUSAL_TEXT` 并置 `refused=True`。生成模型 `mistral-small-latest`、温度 0，均走 `src/generation/config.py`。
 - **LangSmith tracing**：`.env` 配好 `LANGSMITH_*` 即自动上报——LangGraph 图 + 每次 ChatMistralAI 调用作为 trace 树；链外检索用 `@traceable` 包成 `retrieve` 子节点，可见召回 docs+score。实测拒答分支（~0.8s）显著快于作答分支（~3s），因短路了生成 LLM。
 
 ```bash
@@ -108,6 +108,14 @@ python scripts/ask.py "What AI practices are prohibited?"          # 命中 → 
 python scripts/ask.py "how do I bake a chocolate cake"            # 越界 → score 阈值拦截、确定性拒答
 python scripts/ask.py "definition of deployer" --show-context     # 边界 → 过阈值、LLM 复核后作答
 ```
+
+### 踩坑记录：grade 放行 ≠ 能作答，导致拒答被误标
+
+**现象**（query「What is trustworthy AI?」）：`grade=relevant`（top 0.824，召回全是 recital），但 `answer` 却是拒答语、`refused` 仍是 `False`，且拒答语被 LLM 截断（三句变两句）。
+
+**根因**：拒答有**两条路径**——`refuse` 节点（确定性）与 generate 内 LLM 自行拒答（LLM 控制）。早期 `refused` 由「跑了哪个节点」决定，而非「实际输出是不是拒答」，所以 generate 内部的拒答被静默标成「成功作答」，且 LLM 复述 `REFUSAL_TEXT` 时不保证逐字。深层原因：AI Act 正文无 "trustworthy AI" 的约束性定义（只在 recital 出现），宽松的 grader 看到主题吻合就放行，严格的 answerer 却找不到可引用的正式定义——两个 LLM 在回答不同问题。
+
+**解法（sentinel 方案）**：answerer 判不足时只输出哨兵 `INSUFFICIENT_CONTEXT`，纯函数 `finalize_answer` 检测哨兵 → 替换成规范 `REFUSAL_TEXT` 并置 `refused=True`。这样①拒答语**保证逐字**、②`refused` **反映真实输出**、③最终拒答权交给最严格、最接近输出的 answerer（grade 退为省 token 的廉价预筛）。同时放宽 prompt 允许「据 recital 作答但注明非约束性」，修掉过度拒答——现在该 query 能正确据 **Recital 27** 作答并标注「non-binding」。Day 8-9 评测与 Day 10-11 审计日志依赖 `refused` 准确，此修复是前提。
 
 ## 目录
 

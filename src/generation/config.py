@@ -27,6 +27,12 @@ REFUSAL_TEXT = (
     "For a definitive interpretation, please consult the official text or a qualified professional."
 )
 
+# Sentinel the answer model emits (instead of paraphrasing REFUSAL_TEXT) when the
+# context can't support an answer. graph.finalize_answer maps it to the canonical
+# REFUSAL_TEXT and sets refused=True, so an in-generation refusal is verbatim and
+# correctly flagged — not silently mislabeled as a successful answer.
+INSUFFICIENT_SENTINEL = "INSUFFICIENT_CONTEXT"
+
 # Tracing is governed entirely by the LANGSMITH_* env vars in .env
 # (LANGSMITH_TRACING / LANGSMITH_API_KEY / LANGSMITH_PROJECT); no constant here,
 # so there's no dead config that silently disagrees with the environment.

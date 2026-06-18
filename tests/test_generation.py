@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from generation import config  # noqa: E402
-from generation.graph import build_graph  # noqa: E402
+from generation.graph import build_graph, finalize_answer  # noqa: E402
 from generation.grade import score_gate  # noqa: E402
 from generation.prompts import format_context  # noqa: E402
 from retrieval.retriever import Hit  # noqa: E402
@@ -55,6 +55,21 @@ def test_format_context_carries_headers_in_rank_order():
 def test_refusal_text_is_stable_and_nonempty():
     assert config.REFUSAL_TEXT
     assert "cannot confirm" in config.REFUSAL_TEXT.lower()
+
+
+def test_finalize_answer_passes_real_answer_through():
+    ans, refused = finalize_answer("Under Article 5, the following practices are prohibited...")
+    assert refused is False
+    assert ans.startswith("Under Article 5")
+
+
+def test_finalize_answer_maps_sentinel_to_verbatim_refusal():
+    # In-generation refusal must be verbatim REFUSAL_TEXT and flagged refused=True,
+    # not an LLM paraphrase mislabeled as a successful answer (the bug this fixes).
+    for raw in (config.INSUFFICIENT_SENTINEL, f"  {config.INSUFFICIENT_SENTINEL}\n", "insufficient_context"):
+        ans, refused = finalize_answer(raw)
+        assert refused is True
+        assert ans == config.REFUSAL_TEXT
 
 
 def test_graph_compiles_with_expected_nodes():

@@ -11,7 +11,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from retrieval.retriever import Hit
 
-from .config import REFUSAL_TEXT
+from .config import INSUFFICIENT_SENTINEL
 
 
 def format_context(hits: List[Hit]) -> str:
@@ -44,9 +44,13 @@ ANSWER_PROMPT = ChatPromptTemplate.from_messages(
             "knowledge and never invent or paraphrase legal text that is not present.\n"
             "2. For every statement, cite the specific provision it comes from using the "
             "header of the excerpt (e.g. \"Article 5\", \"Annex III\", \"Recital 28\").\n"
-            "3. If the CONTEXT does not contain enough information to answer, reply with "
-            "EXACTLY this sentence and nothing else:\n"
-            f"{REFUSAL_TEXT}\n"
+            "3. Binding obligations live in the Articles/Annexes; Recitals are non-binding "
+            "context. If only Recitals address the question, you may still answer from them, "
+            "but state explicitly that this is recital/contextual material, not a binding "
+            "definition or obligation.\n"
+            "4. Only when the CONTEXT is genuinely off-topic or lacks any basis to answer, "
+            "output EXACTLY this token and nothing else:\n"
+            f"{INSUFFICIENT_SENTINEL}\n"
             "Be precise and concise.",
         ),
         ("human", "QUESTION:\n{question}\n\nCONTEXT:\n{context}"),
