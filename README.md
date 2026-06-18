@@ -20,10 +20,11 @@
 ```bash
 conda env create -f environment.yml
 conda activate aiact-rag
-cp .env.example .env                   # 填入 MISTRAL_API_KEY / QDRANT_URL / QDRANT_API_KEY
+cp .env.example .env                   # 填入 MISTRAL / QDRANT / LANGSMITH key
 python scripts/run_ingestion.py        # Day 1-2: fetch -> parse -> chunk
 python scripts/build_index.py          # Day 3-4: embed (Mistral) -> 索引到 Qdrant
-python scripts/query.py "What AI practices are prohibited?"   # 检索
+python scripts/query.py "What AI practices are prohibited?"   # Day 3-4: 纯检索
+python scripts/ask.py   "What AI practices are prohibited?"   # Day 5: 检索→grade→作答/拒答
 pytest -q                              # sanity 检查（不联网）
 ```
 
@@ -78,13 +79,35 @@ python scripts/query.py "high-risk" --unit-type article --number-min 6 --number-
 ```
 
 **structure vs baseline（同一问题「What are the prohibited AI practices?」）**：
-- `structure`：Top-4 全部命中 **Article 5**，带 `context_header` + 章节，可直接溯源引用，全为有约束力的正文。
+- `structure`：Top-4 全部命中 **Article 5**，带 `context_header` + 章节，可直接溯源引用，全10有约束力的正文。
 - `baseline`：#1 命中正确内容但只是 `chunk 126`（无条款号）；#2-#4 落到 **Recital（非约束性前言）**，且无 metadata 可区分——印证了「丢结构」的代价。
 - 越界问题（"chocolate cake"）得分 ~0.62 vs 在范围内 0.85+，分离明显，可作 Day 5 低置信度拒答的阈值依据。
 
 ### Future work：Hybrid 检索（dense + sparse）
 
 纯 dense 检索对**精确术语/条款号**（"deployer"、"general-purpose AI model"、"Article 5(1)(h)"）的关键词匹配易漏，而这在法律问答里很关键。Qdrant + langchain-qdrant 原生支持 `RetrievalMode.HYBRID`（FastEmbed 稀疏向量，如 BM25/SPLADE），可把 dense 语义召回与 sparse 关键词召回融合。计划在 Day 8-9 作为评测表又一行（dense vs hybrid）评估收益后再决定接入——需加 `fastembed` 依赖并重建带稀疏向量的 collection。
+
+## 编排与生成（Day 5）
+
+用 **LangGraph** 把检索升级为完整问答闭环，核心是「检索不到/不相关就拒答、绝不编造法条」——法律问答刚需。
+
+```
+START → retrieve → grade ─(relevant)→ generate → END
+                     └────(irrelevant)→ refuse  → END
+```
+
+- **grade 两层**（`src/generation/grade.py`）：
+  1. **score 阈值**（`GRADE_MIN_SCORE=0.65`，纯函数 `score_gate`）：top hit 低于阈值直接拒答，**不花 LLM 调用**。阈值取自 Day 3-4 实测分离（在范围内 ≥0.72，越界 ~0.62）。
+  2. **LLM 复核**（过阈值后）：Mistral 用 `with_structured_output` 二分判定 context 是否真能回答（CRAG/self-RAG 风格），输出 `relevant + reason`。
+- **Grounded generation**（`src/generation/prompts.py` `ANSWER_PROMPT`）三条硬约束：① 只用提供的 context；② 每条结论标注 Article/Annex/Recital 号（取自 `context_header`）；③ context 不足时逐字输出 `REFUSAL_TEXT`，不编造。
+- **拒答确定性**：`refuse` 节点直接写死 `REFUSAL_TEXT`，不交给 LLM 措辞（零幻觉风险）。生成模型 `mistral-small-latest`、温度 0，均走 `src/generation/config.py`。
+- **LangSmith tracing**：`.env` 配好 `LANGSMITH_*` 即自动上报——LangGraph 图 + 每次 ChatMistralAI 调用作为 trace 树；链外检索用 `@traceable` 包成 `retrieve` 子节点，可见召回 docs+score。实测拒答分支（~0.8s）显著快于作答分支（~3s），因短路了生成 LLM。
+
+```bash
+python scripts/ask.py "What AI practices are prohibited?"          # 命中 → 引用 Article 5 作答
+python scripts/ask.py "how do I bake a chocolate cake"            # 越界 → score 阈值拦截、确定性拒答
+python scripts/ask.py "definition of deployer" --show-context     # 边界 → 过阈值、LLM 复核后作答
+```
 
 ## 目录
 
@@ -93,15 +116,16 @@ data/raw/         原始 HTML 快照 + fetch 元数据（提交）
 data/processed/   解析与切分产物（gitignore，可复现）
 src/ingestion/    schema / fetch / parse / chunk
 src/retrieval/    config / embeddings / index / retriever（Qdrant + Mistral）
-scripts/          run_ingestion.py · build_index.py · query.py
-tests/            pytest sanity 断言（ingestion + retrieval，不联网）
+src/generation/   config / llm / prompts / grade / graph（LangGraph + LangSmith）
+scripts/          run_ingestion.py · build_index.py · query.py · ask.py
+tests/            pytest sanity 断言（ingestion + retrieval + generation，不联网）
 ```
 
 ## 路线图
 
 - [x] **Day 1-2**：数据摄取与预处理
 - [x] **Day 3-4**：Embedding（Mistral）+ Qdrant 索引 + 向量检索（rerank 插槽预留）
-- [ ] Day 5：LangGraph 编排 + LangSmith tracing
+- [x] **Day 5**：LangGraph 编排（retrieve→grade→generate/refuse）+ grounded 生成 + LangSmith tracing
 - [ ] Day 6-7：FastAPI + Docker
 - [ ] Day 8-9：RAGAS 评测 + MLflow
 - [ ] Day 10-11：合规层（来源追溯 / PII / 审计日志）

@@ -17,4 +17,7 @@ dependencies:
       - langchain-mistralai>=0.2
       - langchain-qdrant>=0.2
       - qdrant-client>=1.12
+      # --- Day 5: orchestration (LangGraph) & tracing (LangSmith) ---
+      - langgraph>=0.2
+      - langsmith>=0.1
       # later: cohere (Day 3-4 rerank, deferred), ragas, mlflow, fastapi, presidio
