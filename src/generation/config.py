@@ -18,7 +18,18 @@ GRADE_MIN_SCORE = 0.65
 GRADE_USE_LLM = True  # after the score gate, also ask the LLM if context is relevant
 
 # --- Generation context ---
-ANSWER_TOP_N = 5  # how many retrieved chunks to feed the answer prompt
+ANSWER_TOP_N = 5  # how many retrieved chunks to RETRIEVE as answer candidates
+
+# Per-hit selection before generation. The score gate only vets hits[0]; without
+# this, all ANSWER_TOP_N hits (incl. weak tail ones, e.g. 0.55 under a 0.85 top)
+# get fed to the prompt and dilute the grounding. We keep the top hit plus only
+# those close to it, using two complementary, query-robust criteria:
+#   - ANSWER_MIN_SCORE: absolute floor; a hit below this is noise even if recalled.
+#   - ANSWER_REL_DROP:  relative floor; drop hits that fall this far below the top
+#     hit (a large gap signals a topic shift, and cosine scores drift per query so
+#     a relative band travels better than a second hard threshold).
+ANSWER_MIN_SCORE = 0.55
+ANSWER_REL_DROP = 0.10
 
 # --- Refusal (deterministic; never hand off to the LLM to phrase) ---
 REFUSAL_TEXT = (

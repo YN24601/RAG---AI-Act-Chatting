@@ -18,7 +18,7 @@ from langsmith import traceable
 from retrieval.retriever import Hit, Retriever
 
 from . import config
-from .grade import llm_grade, score_gate
+from .grade import llm_grade, score_gate, select_answer_hits
 from .llm import get_chat_llm
 from .prompts import ANSWER_PROMPT, format_context
 
@@ -31,6 +31,7 @@ class RAGState(TypedDict, total=False):
     grade_reason: str
     answer: str
     refused: bool
+    used_hits: int  # how many of the recalled hits actually grounded the answer
 
 
 @lru_cache(maxsize=2)  # one client per strategy (baseline/structure)
@@ -78,12 +79,15 @@ def finalize_answer(raw: str) -> tuple[str, bool]:
 
 
 def generate(state: RAGState) -> RAGState:
+    # Ground only on hits close to the top one — the score gate vetted hits[0],
+    # not the weaker tail, which would otherwise dilute the context.
+    used = select_answer_hits(state["hits"])
     chain = ANSWER_PROMPT | get_chat_llm() | StrOutputParser()
     raw = chain.invoke(
-        {"question": state["question"], "context": format_context(state["hits"])}
+        {"question": state["question"], "context": format_context(used)}
     )
     answer, refused = finalize_answer(raw)
-    return {"answer": answer, "refused": refused}
+    return {"answer": answer, "refused": refused, "used_hits": len(used)}
 
 
 def refuse(state: RAGState) -> RAGState:
@@ -102,6 +106,7 @@ def build_graph():
     g.add_node("grade", grade)
     g.add_node("generate", generate)
     g.add_node("refuse", refuse)
+
     g.add_edge(START, "retrieve")
     g.add_edge("retrieve", "grade")
     g.add_conditional_edges("grade", _route, {"generate": "generate", "refuse": "refuse"})

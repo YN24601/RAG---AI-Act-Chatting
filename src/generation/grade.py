@@ -33,6 +33,27 @@ def score_gate(hits: List[Hit], min_score: float = config.GRADE_MIN_SCORE) -> bo
     return hits[0].score >= min_score
 
 
+def select_answer_hits(
+    hits: List[Hit],
+    min_score: float = config.ANSWER_MIN_SCORE,
+    rel_drop: float = config.ANSWER_REL_DROP,
+) -> List[Hit]:
+    """Trim the recalled hits to the ones worth grounding an answer on.
+
+    The score gate only vouches for the top hit; the tail can be much weaker and
+    dilutes the context. Qdrant returns hits in descending score order, so we keep
+    the contiguous prefix at/above a floor that combines an absolute minimum and a
+    relative band below the top hit. The top hit is always kept.
+
+    Pure function (no network) — unit-tested in isolation.
+    """
+    if not hits:
+        return []
+    floor = max(min_score, hits[0].score - rel_drop)
+    kept = [h for h in hits if h.score >= floor]
+    return kept or hits[:1]
+
+
 def llm_grade(question: str, hits: List[Hit]) -> GradeResult:
     """Ask the LLM whether the retrieved excerpts truly answer the question."""
     grader = get_chat_llm().with_structured_output(GradeResult)

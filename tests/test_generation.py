@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from generation import config  # noqa: E402
 from generation.graph import build_graph, finalize_answer  # noqa: E402
-from generation.grade import score_gate  # noqa: E402
+from generation.grade import score_gate, select_answer_hits  # noqa: E402
 from generation.prompts import format_context  # noqa: E402
 from retrieval.retriever import Hit  # noqa: E402
 
@@ -38,6 +38,37 @@ def test_score_gate_below_threshold_is_false():
 def test_score_gate_at_or_above_threshold_is_true():
     assert score_gate([_hit(1, config.GRADE_MIN_SCORE)]) is True
     assert score_gate([_hit(1, config.GRADE_MIN_SCORE + 0.2)]) is True
+
+
+def test_select_answer_hits_empty():
+    assert select_answer_hits([]) == []
+
+
+def test_select_answer_hits_drops_weak_tail():
+    # Top 0.85; a 0.60 tail hit is >REL_DROP below it and below the relative floor
+    # (0.75) -> dropped. The 0.80 hit is within the band -> kept.
+    hits = [_hit(1, 0.85), _hit(2, 0.80), _hit(3, 0.60)]
+    kept = select_answer_hits(hits)
+    assert [h.rank for h in kept] == [1, 2]
+
+
+def test_select_answer_hits_absolute_floor():
+    # Top is itself low (0.60) so the absolute floor (0.55), not the relative band,
+    # governs: the 0.50 hit is below it and dropped.
+    hits = [_hit(1, 0.60), _hit(2, 0.50)]
+    kept = select_answer_hits(hits)
+    assert [h.rank for h in kept] == [1]
+
+
+def test_select_answer_hits_always_keeps_top():
+    # Even a single weak hit (below the absolute floor) is preserved — the score
+    # gate decides whether we generate at all; selection never returns empty.
+    assert [h.rank for h in select_answer_hits([_hit(1, 0.10)])] == [1]
+
+
+def test_select_answer_hits_keeps_all_when_tight():
+    hits = [_hit(1, 0.90), _hit(2, 0.88), _hit(3, 0.85)]
+    assert len(select_answer_hits(hits)) == 3
 
 
 def test_format_context_empty():

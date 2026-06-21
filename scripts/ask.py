@@ -36,15 +36,19 @@ def main() -> None:
     print(f"\n{state['answer']}\n")
 
     hits = state.get("hits", [])
+    # Hits are score-descending; generate() grounds on the top `used_hits` only,
+    # so mark the weaker tail that was retrieved but dropped before answering.
+    used = state.get("used_hits", len(hits))
     if hits and not state["refused"]:
-        print("sources:")
+        print(f"sources ({used}/{len(hits)} used for the answer):")
         for h in hits:
             header = h.metadata.get("context_header") or f"chunk {h.metadata.get('chunk_index')}"
-            print(f"  [{h.rank}] score={h.score}  {header}")
+            tag = "" if h.rank <= used else "  (dropped: low score)"
+            print(f"  [{h.rank}] score={h.score}  {header}{tag}")
         print()
     if args.show_context:
         print("-" * 78 + "\ncontext fed to LLM:\n")
-        print(format_context(hits))
+        print(format_context(hits[:used] if not state["refused"] else hits))
         print()
 
 
