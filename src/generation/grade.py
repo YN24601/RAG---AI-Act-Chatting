@@ -9,6 +9,7 @@ from typing import List
 
 from pydantic import BaseModel, Field
 
+from retrieval import config as retrieval_config
 from retrieval.retriever import Hit
 
 from . import config
@@ -30,6 +31,9 @@ def score_gate(hits: List[Hit], min_score: float = config.GRADE_MIN_SCORE) -> bo
     """
     if not hits:
         return False
+    # `>= min_score` assumes a higher-is-better, Cosine-calibrated score; guard so a
+    # change to config.DISTANCE fails loudly instead of silently inverting the gate.
+    retrieval_config.assert_score_threshold_semantics()
     return hits[0].score >= min_score
 
 
@@ -49,6 +53,9 @@ def select_answer_hits(
     """
     if not hits:
         return []
+    # Floor/rel-drop assume a higher-is-better, Cosine-calibrated score; guard so a
+    # change to config.DISTANCE fails loudly instead of silently inverting selection.
+    retrieval_config.assert_score_threshold_semantics()
     floor = max(min_score, hits[0].score - rel_drop)
     kept = [h for h in hits if h.score >= floor]
     return kept or hits[:1]

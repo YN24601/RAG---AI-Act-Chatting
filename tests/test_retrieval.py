@@ -7,6 +7,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+import pytest  # noqa: E402
+
 from retrieval import config  # noqa: E402
 from retrieval.index import to_documents  # noqa: E402
 from retrieval.retriever import build_filter  # noqa: E402
@@ -65,3 +67,17 @@ def test_build_filter_combines_unit_type_and_range():
     f = build_filter(unit_type="article", number_min=6)
     keys = {c.key for c in f.must}
     assert keys == {"metadata.unit_type", "metadata.number_int"}
+
+
+def test_score_semantics_guard_passes_on_calibrated_distance():
+    # Default config (Cosine) is what the thresholds were calibrated for -> no raise.
+    assert config.DISTANCE == config.SCORE_CALIBRATED_DISTANCE
+    config.assert_score_threshold_semantics()
+
+
+def test_score_semantics_guard_raises_on_other_distance(monkeypatch):
+    # The whole point: a DISTANCE change must fail loudly (score direction/scale flips),
+    # never silently invert the gates that all assume higher-is-better Cosine scores.
+    monkeypatch.setattr(config, "DISTANCE", "Euclid")
+    with pytest.raises(RuntimeError, match="calibrated for DISTANCE"):
+        config.assert_score_threshold_semantics()

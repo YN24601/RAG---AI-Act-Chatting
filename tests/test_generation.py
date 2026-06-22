@@ -10,10 +10,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+import pytest  # noqa: E402
+
 from generation import config  # noqa: E402
 from generation.graph import build_graph, finalize_answer  # noqa: E402
 from generation.grade import score_gate, select_answer_hits  # noqa: E402
 from generation.prompts import format_context  # noqa: E402
+from retrieval import config as retrieval_config  # noqa: E402
 from retrieval.retriever import Hit  # noqa: E402
 
 
@@ -69,6 +72,16 @@ def test_select_answer_hits_always_keeps_top():
 def test_select_answer_hits_keeps_all_when_tight():
     hits = [_hit(1, 0.90), _hit(2, 0.88), _hit(3, 0.85)]
     assert len(select_answer_hits(hits)) == 3
+
+
+def test_score_gates_raise_when_distance_not_calibrated(monkeypatch):
+    # score_gate / select_answer_hits all assume higher-is-better Cosine scores; a
+    # DISTANCE change must surface as an error here, not silently invert the gates.
+    monkeypatch.setattr(retrieval_config, "DISTANCE", "Euclid")
+    with pytest.raises(RuntimeError, match="calibrated for DISTANCE"):
+        score_gate([_hit(1, 0.90)])
+    with pytest.raises(RuntimeError, match="calibrated for DISTANCE"):
+        select_answer_hits([_hit(1, 0.90), _hit(2, 0.80)])
 
 
 def test_format_context_empty():

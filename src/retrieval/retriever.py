@@ -91,6 +91,9 @@ class Retriever:
         qfilter = build_filter(unit_type, number_min, number_max)
         scored = self.vs.similarity_search_with_score(query, k=k, filter=qfilter)
         if min_score is not None:
+            # `s >= min_score` assumes a higher-is-better, Cosine-calibrated score;
+            # guard so a change to config.DISTANCE fails loudly instead of inverting.
+            config.assert_score_threshold_semantics()
             scored = [(doc, s) for doc, s in scored if s >= min_score]
         scored = self._rerank(query, scored, top_n)
         return [
