@@ -18,6 +18,7 @@ from langsmith import traceable
 from retrieval.retriever import Hit, Retriever
 
 from . import config
+from .errors import PipelineError
 from .grade import llm_grade, score_gate, select_answer_hits
 from .llm import get_chat_llm
 from .prompts import ANSWER_PROMPT, format_context
@@ -47,7 +48,13 @@ def _run_retrieval(question: str, strategy: str) -> List[Hit]:
 
 # --- Nodes ---
 def retrieve(state: RAGState) -> RAGState:
-    hits = _run_retrieval(state["question"], state.get("strategy", "structure"))
+    # Bare Qdrant call: a timeout/5xx here is a hard failure (no context -> no
+    # answer). Wrap it as a controlled PipelineError so the API layer can return a
+    # unified error instead of leaking the vector-store client's stack trace.
+    try:
+        hits = _run_retrieval(state["question"], state.get("strategy", "structure"))
+    except Exception as e:  # noqa: BLE001 — boundary: any client error -> controlled type
+        raise PipelineError("retrieve", "vector store is unavailable") from e
     return {"hits": hits}
 
 
@@ -57,7 +64,16 @@ def grade(state: RAGState) -> RAGState:
         top = hits[0].score if hits else None
         return {"grade": "irrelevant", "grade_reason": f"score gate failed (top={top})"}
     if config.GRADE_USE_LLM:
-        result = llm_grade(state["question"], hits)
+        # The LLM grader only refines a result the deterministic score gate already
+        # passed. If Mistral is unavailable, degrade gracefully to "score gate
+        # passed -> relevant" rather than crash the whole request on a soft check.
+        try:
+            result = llm_grade(state["question"], hits)
+        except Exception as e:  # noqa: BLE001 — soft check: fall back, don't fail
+            return {
+                "grade": "relevant",
+                "grade_reason": f"llm grader unavailable ({type(e).__name__}), fell back to score gate",
+            }
         return {
             "grade": "relevant" if result.relevant else "irrelevant",
             "grade_reason": result.reason,
@@ -82,10 +98,16 @@ def generate(state: RAGState) -> RAGState:
     # Ground only on hits close to the top one — the score gate vetted hits[0],
     # not the weaker tail, which would otherwise dilute the context.
     used = select_answer_hits(state["hits"])
-    chain = ANSWER_PROMPT | get_chat_llm() | StrOutputParser()
-    raw = chain.invoke(
-        {"question": state["question"], "context": format_context(used)}
-    )
+    # Bare Mistral call: a timeout/5xx here is a hard failure (we have context but
+    # can't produce the grounded answer). Wrap as PipelineError — never fabricate,
+    # and don't mislabel an outage as a refusal (refused must stay authoritative).
+    try:
+        chain = ANSWER_PROMPT | get_chat_llm() | StrOutputParser()
+        raw = chain.invoke(
+            {"question": state["question"], "context": format_context(used)}
+        )
+    except Exception as e:  # noqa: BLE001 — boundary: any client error -> controlled type
+        raise PipelineError("generate", "answer model is unavailable") from e
     answer, refused = finalize_answer(raw)
     return {"answer": answer, "refused": refused, "used_hits": len(used)}
 
