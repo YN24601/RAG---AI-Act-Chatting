@@ -1,0 +1,15 @@
+# Keep the build context lean; the image only needs src/ + requirements.txt.
+data/
+.git/
+.gitignore
+__pycache__/
+*.pyc
+.env
+.env.example
+tests/
+方案/
+.pytest_cache/
+.vscode/
+docs/
+*.egg-info/
+.DS_Store

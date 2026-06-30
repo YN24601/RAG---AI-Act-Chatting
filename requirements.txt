@@ -1,0 +1,17 @@
+# Runtime deps for the serving image (multi-stage Dockerfile).
+# Derived from environment.yml's pip section, minus pytest (tests/ is excluded
+# from the image). Kept in sync with environment.yml by hand.
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=5.0
+langchain-text-splitters>=0.3
+tiktoken>=0.7
+pydantic>=2.6
+python-dotenv>=1.0
+langchain-mistralai>=0.2
+langchain-qdrant>=0.2
+qdrant-client>=1.12
+langgraph>=0.2
+langsmith>=0.1
+fastapi>=0.115
+uvicorn[standard]>=0.30

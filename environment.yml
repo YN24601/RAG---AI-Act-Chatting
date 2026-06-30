@@ -20,4 +20,7 @@ dependencies:
       # --- Day 5: orchestration (LangGraph) & tracing (LangSmith) ---
       - langgraph>=0.2
       - langsmith>=0.1
-      # later: cohere (Day 3-4 rerank, deferred), ragas, mlflow, fastapi, presidio
+      # --- Day 6-7: serving (FastAPI + uvicorn) ---
+      - fastapi>=0.115
+      - uvicorn[standard]>=0.30
+      # later: cohere (Day 3-4 rerank, deferred), ragas, mlflow, presidio
