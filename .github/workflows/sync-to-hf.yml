@@ -35,6 +35,8 @@ jobs:
           HF_OIDC_RESOURCE: spaces/Yana24601/AI_act
         run: |
           hf upload Yana24601/AI_act . . \
-            --repo-type space \
-            --exclude ".git/*" ".github/*" \
-            --commit-message "Sync from ${GITHUB_SHA::7}"
+            --repo-type=space \
+            --exclude=".git/*" \
+            --exclude=".github/*" \
+            --delete="*" \
+            --commit-message="Sync from ${GITHUB_SHA::7}"
