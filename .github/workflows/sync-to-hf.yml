@@ -1,0 +1,40 @@
+name: Sync to Hugging Face Space
+
+# GitHub is the source of truth; every push to main mirrors the repo to the
+# HF Docker Space (Yana24601/AI_act), which then rebuilds the image.
+#
+# Auth: keyless via Trusted Publishers (OIDC). No HF_TOKEN secret — the hf CLI
+# detects GitHub Actions, exchanges the job's short-lived OIDC token for a
+# 1-hour, Space-scoped HF token, and uses it automatically. The only thing this
+# needs is `id-token: write` below + a matching Trusted Publisher on the Space.
+#
+# Runtime secrets (MISTRAL/QDRANT keys) live in the Space's own Secrets, NOT here.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required: lets the job mint the OIDC token for the exchange
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the hf CLI
+        run: |
+          curl -LsSf https://hf.co/cli/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Mirror repo to the Space
+        env:
+          # Resource the OIDC token is scoped to (note the `spaces/` prefix).
+          HF_OIDC_RESOURCE: spaces/Yana24601/AI_act
+        run: |
+          hf upload Yana24601/AI_act . . \
+            --repo-type space \
+            --exclude ".git/*" ".github/*" \
+            --commit-message "Sync from ${GITHUB_SHA::7}"

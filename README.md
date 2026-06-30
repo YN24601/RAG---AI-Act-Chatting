@@ -248,6 +248,8 @@ curl localhost:8000/health                                # {"status":"ok"}
 4. Space 构建完成后监听 **7860**（`app_port` 已对齐），打开 Space URL 即同源前端页。
 - 备选：Railway / Render 免费层（同一镜像、更「生产服务」叙事，但多一套账号）。
 
+**自动同步（CI/CD）**：`.github/workflows/sync-to-hf.yml` 让 GitHub 成为唯一源——每次 push 到 `main`，`hf` CLI 把仓库镜像到 HF Space 并触发其重建镜像。认证走 **Trusted Publishers（OIDC，无 token）**：workflow 带 `id-token: write`，CLI 自动用 job 的短效 OIDC 令牌换取 1 小时、Space 限定的 HF token——**GitHub 侧无需任何 secret**。HF 侧需在 Space 配 Trusted Publisher（claims：repo=`YN24601/RAG---AI-Act-Chatting`、branch=`main`、workflow=`sync-to-hf.yml`）。运行时密钥（MISTRAL/QDRANT）仍走 Space Secrets，与同步认证互不相干。配置后以 GitHub 为源、勿再手动改 Space 文件。
+
 ### 明确延后（诚实标注）
 
 鉴权、限流、CORS（同源不需要）、SSE 流式（可选）、CI、`docker-compose.yml`——均非 Day 6-7 核心，留待后续或按需裁剪。
