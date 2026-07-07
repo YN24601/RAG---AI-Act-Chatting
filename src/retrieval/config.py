@@ -17,7 +17,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
 QDRANT_URL = os.environ.get("QDRANT_URL")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
-COHERE_API_KEY = os.environ.get("COHERE_API_KEY")  # reserved for rerank (deferred)
+COHERE_API_KEY = os.environ.get("COHERE_API_KEY")  # RESERVED, not consumed: rerank is an identity passthrough (Retriever._rerank); no code reads this yet
 
 # --- Model / vector params ---
 EMBED_MODEL = "mistral-embed"
