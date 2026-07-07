@@ -20,6 +20,7 @@ pinned: false
 - [编排与生成（Day 5）](#编排与生成day-5)
 - [已知技术缺陷（审计记录）](#已知技术缺陷审计记录)
 - [Serving 与容器化（Day 6-7）](#serving-与容器化day-6-7)
+- [评测（Day 8-9）](#评测day-8-9)
 - [项目结构](#项目结构)
 - [路线图](#路线图)
 
@@ -46,6 +47,7 @@ python scripts/run_ingestion.py        # Day 1-2: fetch -> parse -> chunk
 python scripts/build_index.py          # Day 3-4: embed (Mistral) -> 索引到 Qdrant
 python scripts/query.py "What AI practices are prohibited?"   # Day 3-4: 纯检索
 python scripts/ask.py   "What AI practices are prohibited?"   # Day 5: 检索→grade→作答/拒答
+python scripts/evaluate.py --strategy all --pause 0.6         # Day 8-9: RAGAS + 拒答指标 → MLflow
 pytest -q                              # sanity 检查（不联网）
 
 # 拉起 Web 服务（FastAPI + 同源前端页），然后浏览器打开 http://localhost:8000/
@@ -82,7 +84,7 @@ structure      408   270.5   233.5    508
 
 `baseline` 名义上带 `chunk_overlap=64`，但实测 300 对相邻 chunk 中**只有 18 对真正共享重叠，282 对是零重叠硬切**。原因是 chunk_overlap（重叠视窗）与 semantic boundary（语义边界，如 \n\n）之间的底层算法博弈导致的静默失效；当文本中出现长度超过重叠上限的巨大自然段落时，`RecursiveCharacterTextSplitter` 为了不破坏该段落的完整性，只能被迫放弃相邻 chunk 之间的 overlap，从而在长文本的切分中留下不可预知的 context 断层。
 
-即"块块有缓冲"是错觉——重叠只在长条款内部生效，条款与条款之间是零重叠硬切，短条款的语境因此易被邻居挤入同一块又被硬边界截断。这正是 `structure`（按条款对齐边界）有望在 context precision 上胜出的机制性原因，留待 Day 8-9 RAGAS 验证。
+即"块块有缓冲"是错觉——重叠只在长条款内部生效，条款与条款之间是零重叠硬切，短条款的语境因此易被邻居挤入同一块又被硬边界截断。当初据此**假设** `structure`（按条款对齐边界）会在 context precision 上胜出——**但 Day 8-9 的 RAGAS 评测并未证实这一点**（baseline 的大 chunk 在文本归因型指标上反而略高）；structure 的收益体现在 faithfulness 与拒答稳健性，详见[评测（Day 8-9）](#评测day-8-9)。
 
 ### 已知限制（设计取舍，留待后续阶段）
 
@@ -111,7 +113,7 @@ python scripts/query.py "high-risk" --unit-type article --number-min 6 --number-
 
 纯 dense 检索对**精确术语/条款号**（"deployer"、"general-purpose AI model"、"Article 5(1)(h)"）的关键词匹配易漏，而这在法律问答里很关键。Qdrant + langchain-qdrant 原生支持 `RetrievalMode.HYBRID`（FastEmbed 稀疏向量，如 BM25/SPLADE），可把 dense 语义召回与 sparse 关键词召回融合——需加 `fastembed` 依赖并重建带稀疏向量的 collection。
 
-> 注：Hybrid 是**项目自加轴**（原始 `方案/` 未列）。Day 8-9 首版评测表锁定 **chunking × rerank 开/关**（对齐方案）；Hybrid 作为额外一行（dense vs hybrid）留待首表完成、确有收益空间再接入，不阻塞主线。
+> 注：Hybrid 是**项目自加轴**（原始 `方案/` 未列）。Day 8-9 首版评测表实际只跑了 **chunking 轴**（baseline vs structure，rerank 两配置均为 off）；rerank 开/关与 dense vs hybrid 作为额外行，留待 Cohere/稀疏向量接入后再补，不阻塞主线。
 
 ## 编排与生成（Day 5）
 
@@ -248,22 +250,63 @@ curl localhost:8000/health                                # {"status":"ok"}
 4. Space 构建完成后监听 **7860**（`app_port` 已对齐），打开 Space URL 即同源前端页。
 - 备选：Railway / Render 免费层（同一镜像、更「生产服务」叙事，但多一套账号）。
 
+> **部署状态（已验证）**：`sync-to-hf.yml` 最近一次 push（tip commit）Actions **绿灯**；线上 Space `https://yana24601-ai-act.hf.space` 存活——`/health` 返回 `{"status":"ok"}`，`/health?ready=1` 返回 `{"status":"ok","ready":true}`（Space Secrets 已配、Qdrant 可达、两套 collection 就绪）。
+> 命名说明：Trusted Publisher 的 `repo=YN24601/RAG---AI-Act-Chatting` 指 **GitHub 源仓库**，`hf upload` 目标 `Yana24601/AI_act` 指 **HF Space**，二者是不同资源、均正确。
+
 **自动同步（CI/CD）**：`.github/workflows/sync-to-hf.yml` 让 GitHub 成为唯一源——每次 push 到 `main`，`hf` CLI 把仓库镜像到 HF Space 并触发其重建镜像。认证走 **Trusted Publishers（OIDC，无 token）**：workflow 带 `id-token: write`，CLI 自动用 job 的短效 OIDC 令牌换取 1 小时、Space 限定的 HF token——**GitHub 侧无需任何 secret**。HF 侧需在 Space 配 Trusted Publisher（claims：repo=`YN24601/RAG---AI-Act-Chatting`、branch=`main`、workflow=`sync-to-hf.yml`）。运行时密钥（MISTRAL/QDRANT）仍走 Space Secrets，与同步认证互不相干。配置后以 GitHub 为源、勿再手动改 Space 文件。
 
 ### 明确延后（诚实标注）
 
 鉴权、限流、CORS（同源不需要）、SSE 流式（可选）、CI、`docker-compose.yml`——均非 Day 6-7 核心，留待后续或按需裁剪。
 
+## 评测（Day 8-9）
+
+把 Day 5 的问答闭环放到 **RAGAS + 自定义拒答指标** 下量化，用 **MLflow** 记录每个配置、**LangSmith dataset** 持久化评测集做可回归的在线 eval。评测轴锁定 **chunking（baseline vs structure）**；rerank 本版仍是 identity passthrough，两配置都诚实记为 `rerank=off`（Cohere 留待后续）。
+
+- **评测集**（`data/eval/eval_set.jsonl`，45 条，提交进仓）：手写、带 ground-truth 与条款引用，覆盖 prohibited / high-risk / GPAI / timeline / definition / governance，外加 **8 条应拒答陷阱**（越界如"how to bake a cake"、语料未含的 Digital Omnibus `Art 4a`、不存在的 `Art 200` / 虚构义务）。
+- **RAGAS judge 用 Mistral**（`LangchainLLMWrapper(get_chat_llm())` + `mistral-embed`），全欧洲栈、与线上一致，非默认 OpenAI。
+- **拒答当权威**：`refused` 是「语料无依据」的第一类信号。数据集**切分**——RAGAS 四指标只在**实际作答**子集上跑（faithfulness/relevancy 对拒答语无意义），**拒答准确率**在全集上算；正例=「应拒答」，`false_negative`（该拒未拒＝编造法条）是安全关键项。
+- 复现：`python scripts/evaluate.py --strategy all --pause 0.6 --langsmith-upload` → `mlflow ui` 看 `aiact-rag-eval`（父 run `compare` 下挂 baseline/structure 两个 nested run + `comparison.md`/逐题 csv）。
+
+**首版评测表**（Mistral judge，n=37 作答 / 8 拒答，单次）：
+
+| 指标 | baseline | structure |
+| --- | --- | --- |
+| faithfulness | 0.940 | **0.975** |
+| answer_relevancy | 0.962 | 0.956 |
+| context_precision | **0.886** | 0.857 |
+| context_recall | **0.914** | 0.801 |
+| refusal_accuracy | 0.978 | **1.000** |
+| refusal_recall | 1.000 | 1.000 |
+| under-refusals (FN) | 0 | 0 |
+| latency p95 作答 / 拒答 (s) | 4.15 / 1.93 | 3.83 / 1.09 |
+
+**怎么读（含与设计假设相反的诚实结论）**：
+
+- **拒答稳健**：两策略都 100% 拦下全部 8 条陷阱（`recall=1.0`、`FN=0`，零编造）。structure `refusal_accuracy=1.000`，baseline `0.978` 的唯一失分是把「Annex III 有哪些领域」**过度拒答**（structure 正确作答）——正是 baseline 丢结构→Annex 召回差→score-gate 误拒的机制性印证。
+- **grounding**：structure faithfulness `0.975` > baseline `0.940`，答案更贴合所给 context。
+- **context precision/recall 反而 baseline 略高**（`0.886/0.914` vs `0.857/0.801`）——**与 README 早前"structure 有望在 context precision 上胜出"的假设相反**，如实记录。合理解释：baseline chunk 更大（固定 ~512、structure-blind），检索到的每块裹挟更多周边文本，RAGAS 的**文本归因型** recall/precision 更易命中；structure chunk 更紧（一条一块），目标条款掉出 top-5 时 recall 跌得更明显。structure 的真正优势是**按条款干净溯源**（Day 10-11 source attribution 才充分兑现），而非 RAGAS 的文本重叠精度。
+- **延迟**：拒答支 p95（~1–2s）显著快于作答支（~4s），印证 score-gate 短路生成 LLM。
+- **注意**：作答子集仅 n=37、单次、LLM-judge 有噪声，~0.03 量级差异宜谨慎；context_recall 的 0.11 差距更值得后续多次取平均复核。
+
+**工程注记（评测管线的三个坑）**：
+
+- **RAGAS × langchain-1.x 不兼容**：ragas（至 0.4.x）在导入期硬引 `langchain_community.chat_models.vertexai.ChatVertexAI`，而项目的 langchain-1.0 拆分已移除该符号。缺的只有这一个符号（且 Mistral judge 从不实例化它），故在 `evaluation/ragas_eval.py` 用一个 `sys.modules` 单符号 shim 化解——**不降级正在线上跑的检索/生成栈、不另起隔离 venv**。
+- **answer_relevancy 曾恒为 NaN**：`ResponseRelevancy` 默认 `strictness=3`（一次要 3 个 completion），触发 `langchain-mistralai._combine_llm_outputs` 的 token-usage `dict += dict` bug；改 `strictness=1` 规避（分数略噪但有效）。
+- **瞬时故障可见而非静默扭曲**：首跑遇 Mistral 瞬时 "model unavailable"，把 baseline 11 项（含全部 8 陷阱）打成 **error**。harness 把 `error` 与 `refused` **分开记**（error 不计作拒答、且排除出 RAGAS 子集），使污染**显式可见**——否则 baseline 会被误报成「从不拒答」（recall 0.0）。加 `--pause` 平滑请求速率后复跑即干净。
+
 ## 项目结构
 
 ```
 data/raw/         原始 HTML 快照 + fetch 元数据（提交）
 data/processed/   解析与切分产物（gitignore，可复现）
+data/eval/        eval_set.jsonl — 手写评测集（提交，ground-truth + 拒答陷阱）
 src/ingestion/    schema / fetch / parse / chunk
 src/retrieval/    config / embeddings / index / retriever（Qdrant + Mistral）
 src/generation/   config / llm / prompts / grade / graph / errors（LangGraph + LangSmith）
-scripts/          run_ingestion.py · build_index.py · query.py · ask.py
-tests/            pytest sanity 断言（ingestion + retrieval + generation，不联网）
+src/evaluation/   schema / harness / aggregate / refusal / ragas_eval / tracking（RAGAS + MLflow + LangSmith）
+scripts/          run_ingestion.py · build_index.py · query.py · ask.py · evaluate.py
+tests/            pytest sanity 断言（ingestion + retrieval + generation + evaluation，不联网）
 Dockerfile        多阶段镜像（builder pip → slim runtime + 静态页 + HEALTHCHECK）
 requirements.txt  镜像运行时依赖（从 environment.yml pip 段派生）
 .dockerignore     构建上下文裁剪（排除 data/ tests/ 等）
@@ -274,7 +317,7 @@ requirements.txt  镜像运行时依赖（从 environment.yml pip 段派生）
 - [x] **Day 1-2**：数据摄取与预处理
 - [x] **Day 3-4**：Embedding（Mistral）+ Qdrant 索引 + 向量检索（rerank 插槽预留）
 - [x] **Day 5**：LangGraph 编排（retrieve→grade→generate/refuse）+ grounded 生成 + LangSmith tracing
-- [x] **Day 6-7**：FastAPI + 同源前端页 + 多阶段 Docker + HF Space 部署配置
-- [ ] Day 8-9：RAGAS 评测 + MLflow
+- [x] **Day 6-7**：FastAPI + 同源前端页 + 多阶段 Docker + HF Space 部署配置（**已验证线上可用**，见部署段）
+- [x] **Day 8-9**：RAGAS 评测（faithfulness / answer relevancy / context precision / recall）+ 拒答准确率 + MLflow + LangSmith dataset
 - [ ] Day 10-11：合规层（来源追溯 / PII / 审计日志）
 - [ ] Day 12：Demo + README

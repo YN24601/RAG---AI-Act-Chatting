@@ -23,4 +23,13 @@ dependencies:
       # --- Day 6-7: serving (FastAPI + uvicorn) ---
       - fastapi>=0.115
       - uvicorn[standard]>=0.30
-      # later: cohere (Day 3-4 rerank, deferred), ragas, mlflow, presidio
+      # --- Day 8-9: evaluation & experiment tracking (dev-only, NOT in requirements.txt) ---
+      # ragas 0.4.x still imports the pre-langchain-1.0 layout (langchain_community.
+      # chat_models.vertexai), which the project's langchain-1.x stack removed. A tiny
+      # sys.modules shim in evaluation.ragas_eval re-adds the one missing symbol (ragas
+      # never instantiates ChatVertexAI for a Mistral judge) — keeps ONE env, no
+      # downgrade of the working pipeline. See evaluation/ragas_eval.py for the why.
+      - ragas>=0.4,<0.5
+      - mlflow>=2.14
+      - datasets>=2.19        # ragas transitive dep; pin explicitly
+      # later: cohere (Day 3-4 rerank, deferred), presidio (Day 10-11 PII)

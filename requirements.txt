@@ -1,6 +1,8 @@
 # Runtime deps for the serving image (multi-stage Dockerfile).
 # Derived from environment.yml's pip section, minus pytest (tests/ is excluded
 # from the image). Kept in sync with environment.yml by hand.
+# Deliberately DOES NOT include dev-only eval deps (pytest, ragas, mlflow,
+# datasets): evaluation runs offline in the conda env, never inside the image.
 requests>=2.31
 beautifulsoup4>=4.12
 lxml>=5.0

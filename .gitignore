@@ -7,6 +7,9 @@ __pycache__/
 # Derived data (regenerable from data/raw via scripts/run_ingestion.py)
 data/processed/
 
+# MLflow local file store (Day 8-9 eval runs; regenerable via scripts/evaluate.py)
+mlruns/
+
 # OS / editor
 .DS_Store
 
