@@ -13,7 +13,6 @@ pinned: false
 **A retrieval-augmented QA system over Regulation (EU) 2024/1689 — built to refuse rather than hallucinate.**
 
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/YN24601/RAG---AI-Act-Chatting/blob/main/LICENSE)
 [![Deploy](https://github.com/YN24601/RAG---AI-Act-Chatting/actions/workflows/sync-to-hf.yml/badge.svg)](https://github.com/YN24601/RAG---AI-Act-Chatting/actions/workflows/sync-to-hf.yml)
 [![Live Space](https://img.shields.io/badge/%F0%9F%A4%97%20Space-live-yellow)](https://yana24601-ai-act.hf.space)
 ![Tests](https://img.shields.io/badge/tests-53%20passing-brightgreen)
@@ -21,7 +20,6 @@ pinned: false
 Legal question answering has an asymmetric cost function: a fabricated article number is far worse than "I don't know." This project builds the full RAG lifecycle around that constraint — **structure-aware retrieval with article-level provenance, a two-stage relevance gate, deterministic refusal, and a measured evaluation loop** — on a fully European stack (Mistral · Qdrant · Hugging Face).
 
 - 🔗 **Live demo** — https://yana24601-ai-act.hf.space
-- 📓 **Development log** (design trade-offs, pitfalls, defect audit) — [`docs/DEVELOPMENT.md`](https://github.com/YN24601/RAG---AI-Act-Chatting/blob/main/docs/DEVELOPMENT.md)
 
 ---
 
@@ -109,7 +107,7 @@ curl localhost:8000/health             # {"status":"ok"}
 | under-refusals (FN) | 0 | 0 |
 | p95 latency answered / refused (s) | 4.15 / 1.93 | 3.83 / 1.09 |
 
-Structure-aware chunking wins on **grounding** (faithfulness) and **refusal robustness**, but — contrary to the original hypothesis — **loses on RAGAS context precision/recall**: baseline's larger chunks drag in more surrounding text, which text-attribution metrics reward. This is recorded as measured rather than reframed; the reasoning is in [the development log](https://github.com/YN24601/RAG---AI-Act-Chatting/blob/main/docs/DEVELOPMENT.md#day-8-9评测).
+Structure-aware chunking wins on **grounding** (faithfulness) and **refusal robustness**, but — contrary to the original hypothesis — **loses on RAGAS context precision/recall**: baseline's larger chunks drag in more surrounding text, which text-attribution metrics reward. This is recorded as measured rather than reframed.
 
 ```bash
 python scripts/evaluate.py --strategy all --pause 0.6 --langsmith-upload
@@ -130,7 +128,6 @@ src/api/           app · schemas · static/index.html            (FastAPI + sam
 src/evaluation/    schema · harness · aggregate · refusal · ragas_eval · tracking
 scripts/           run_ingestion · build_index · query · ask · evaluate
 tests/             53 offline pytest assertions
-docs/              DEVELOPMENT.md — full development log
 Dockerfile         Multi-stage build + HEALTHCHECK
 ```
 
@@ -148,14 +145,10 @@ Dockerfile         Multi-stage build + HEALTHCHECK
 - [ ] Compliance layer — source attribution, PII handling, audit logging
 - [ ] Polished demo
 
-**Deliberately deferred** (see [the development log](https://github.com/YN24601/RAG---AI-Act-Chatting/blob/main/docs/DEVELOPMENT.md#明确延后的事项)): Cohere reranking (the slot is currently an identity passthrough), hybrid dense+sparse retrieval, paragraph-level citation granularity, auth/rate limiting, and a pytest CI gate.
+**Deliberately deferred**: Cohere reranking (the slot is currently an identity passthrough), hybrid dense+sparse retrieval, paragraph-level citation granularity, auth/rate limiting, and a pytest CI gate.
 
 ## Corpus version & disclaimer
 
 Built on the **OJ base text** of Regulation (EU) 2024/1689 (CELEX `32024R1689`, fetched 2026-06-06, sha256 recorded in `data/raw/fetch_metadata.json`). The **Digital Omnibus amendments are deliberately not included** — questions about them are expected to be refused, and one such trap (`Article 4a`) is part of the evaluation set.
 
 > This is an engineering project, not a legal service. Outputs are AI-generated, may be incomplete or wrong, and **do not constitute legal advice**. Consult a qualified professional for compliance decisions.
-
-## License
-
-[MIT](https://github.com/YN24601/RAG---AI-Act-Chatting/blob/main/LICENSE)
