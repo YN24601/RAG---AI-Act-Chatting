@@ -16,6 +16,8 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional
 
+from ingestion.schema import PROJECT_ROOT
+
 from .schema import EvalItem
 
 # ---- pure: comparison table (unit-testable, also written straight into README) ----
@@ -81,10 +83,18 @@ def _write_results_csv(path: Path, results) -> None:
 
 # ---- MLflow ----
 
+MLFLOW_DB_URI = f"sqlite:///{PROJECT_ROOT / 'mlflow.db'}"
+
+
 def log_mlflow(summaries: List[dict], experiment: str = "aiact-rag-eval") -> Optional[str]:
     """Log a parent 'compare' run with nested per-strategy runs. Returns parent run id."""
     import mlflow  # local import: dev-only dep, not needed to import this module
 
+    # An explicit MLFLOW_TRACKING_URI (e.g. a remote server) still wins.
+    if not os.environ.get("MLFLOW_TRACKING_URI"):
+        mlflow.set_tracking_uri(MLFLOW_DB_URI)
+        if mlflow.get_experiment_by_name(experiment) is None:
+            mlflow.create_experiment(experiment, artifact_location=str(PROJECT_ROOT / "mlruns" / experiment))
     mlflow.set_experiment(experiment)
     with mlflow.start_run(run_name="compare") as parent:
         table = build_comparison_table(summaries)

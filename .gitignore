@@ -9,6 +9,7 @@ data/processed/
 
 # MLflow local file store (Day 8-9 eval runs; regenerable via scripts/evaluate.py)
 mlruns/
+mlflow.db
 
 # OS / editor
 .DS_Store

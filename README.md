@@ -111,6 +111,7 @@ Structure-aware chunking wins on **grounding** (faithfulness) and **refusal robu
 
 ```bash
 python scripts/evaluate.py --strategy all --pause 0.6 --langsmith-upload
+python scripts/evaluate.py --strategy "structure" --pause 0.6 --langsmith-upload
 mlflow ui   # experiment "aiact-rag-eval": parent run + nested per-strategy runs
 ```
 
