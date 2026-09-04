@@ -32,23 +32,30 @@ def main() -> None:
     print(f"strategy : {args.strategy}")
     print(f"grade    : {state['grade']}  ({state.get('grade_reason', '')})")
     print(f"refused  : {state['refused']}")
+    print(
+        f"rerank   : {state.get('rerank_status', 'off')}  "
+        f"model={state.get('rerank_model') or 'none'}  "
+        f"latency={state.get('rerank_latency_ms', 0.0):.2f}ms"
+    )
     print("=" * 78)
     print(f"\n{state['answer']}\n")
 
     hits = state.get("hits", [])
-    # Hits are score-descending; generate() grounds on the top `used_hits` only,
-    # so mark the weaker tail that was retrieved but dropped before answering.
-    used = state.get("used_hits", len(hits))
+    used_ids = {h.chunk_id for h in state.get("answer_hits", [])}
     if hits and not state["refused"]:
-        print(f"sources ({used}/{len(hits)} used for the answer):")
+        print(f"sources ({len(used_ids)}/{len(hits)} used for the answer):")
         for h in hits:
             header = h.metadata.get("context_header") or f"chunk {h.metadata.get('chunk_index')}"
-            tag = "" if h.rank <= used else "  (dropped: low score)"
-            print(f"  [{h.rank}] score={h.score}  {header}{tag}")
+            tag = "" if h.chunk_id in used_ids else "  (not used)"
+            rr = f" rerank={h.rerank_score:.4f}" if h.rerank_score is not None else ""
+            print(
+                f"  [{h.rank}] vector_rank={h.retrieval_rank} "
+                f"vector={h.score}{rr}  {header}{tag}"
+            )
         print()
     if args.show_context:
         print("-" * 78 + "\ncontext fed to LLM:\n")
-        print(format_context(hits[:used] if not state["refused"] else hits))
+        print(format_context(state.get("answer_hits", []) if not state["refused"] else hits))
         print()
 
 

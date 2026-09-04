@@ -27,6 +27,8 @@ class Source(BaseModel):
 
     rank: int
     score: float
+    retrieval_rank: int
+    rerank_score: Optional[float] = None
     citation: Optional[str] = None  # = metadata.context_header, e.g. "Article 6 — Classification ..."
     chapter: Optional[str] = None
     unit_type: Optional[str] = None
@@ -41,6 +43,10 @@ class AskResponse(BaseModel):
     grade: Optional[str] = None
     grade_reason: Optional[str] = None
     used_hits: int = 0
+    rerank_status: str = "off"
+    rerank_model: Optional[str] = None
+    rerank_latency_ms: float = 0.0
+    rerank_failure_reason: Optional[str] = None
     sources: List[Source] = Field(default_factory=list)
 
 
@@ -49,16 +55,22 @@ class QueryRequest(BaseModel):
     question: str = Field(min_length=1)
     strategy: Strategy = "structure"
     k: Optional[int] = Field(default=None, ge=1, description="Vector recall depth")
-    top_n: Optional[int] = Field(default=None, ge=1, description="Hits returned after (future) rerank")
+    top_n: Optional[int] = Field(default=None, ge=1, description="Hits returned after reranking")
     unit_type: Optional[str] = None
     number_min: Optional[int] = None
     number_max: Optional[int] = None
     min_score: Optional[float] = None
+    rerank: Optional[bool] = Field(
+        default=None,
+        description="Debug override; null uses the deployment RERANK_MODE",
+    )
 
 
 class QueryHit(BaseModel):
     rank: int
     score: float
+    retrieval_rank: int
+    rerank_score: Optional[float] = None
     citation: Optional[str] = None
     chapter: Optional[str] = None
     unit_type: Optional[str] = None
@@ -68,6 +80,10 @@ class QueryHit(BaseModel):
 
 class QueryResponse(BaseModel):
     hits: List[QueryHit] = Field(default_factory=list)
+    rerank_status: str = "off"
+    rerank_model: Optional[str] = None
+    rerank_latency_ms: float = 0.0
+    rerank_failure_reason: Optional[str] = None
 
 
 # --- /health ---

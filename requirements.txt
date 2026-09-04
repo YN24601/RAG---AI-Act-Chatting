@@ -13,6 +13,7 @@ python-dotenv>=1.0
 langchain-mistralai>=0.2
 langchain-qdrant>=0.2
 qdrant-client>=1.12
+cohere>=7,<8
 langgraph>=0.2
 langsmith>=0.1
 fastapi>=0.115

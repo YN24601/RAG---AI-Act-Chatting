@@ -186,7 +186,7 @@
     <div class="row">
       <span>Source: Official Journal L 2024/1689 (base text)</span>
       <span>·</span>
-      <span>Retrieval: Mistral embeddings + Qdrant</span>
+      <span>Retrieval: Mistral embeddings + Qdrant + optional Cohere Rerank</span>
       <span>·</span>
       <span>Cited sources grounded the answer; “recalled” sources were retrieved but trimmed before generation.</span>
     </div>
@@ -259,7 +259,7 @@ function renderSources(sources, showctx){
       <span class="rank">${s.rank}</span>
       <div class="title">${esc(s.citation || s.chunk_id || 'Untitled provision')}</div>
       ${chapter}
-      <div class="row">${state}<span class="score">score ${(s.score!=null?s.score.toFixed(3):'—')}</span></div>
+      <div class="row">${state}<span class="score">vector ${(s.score!=null?s.score.toFixed(3):'—')}${s.rerank_score!=null?` · rerank ${s.rerank_score.toFixed(3)}`:''}</span></div>
       ${ctx}
     </div>`;
   }).join('');
@@ -277,7 +277,7 @@ function showAnswer(data, showctx){
     answerSlot.innerHTML = `<div class="answer">
       <div class="badge-row">
         <span class="badge grounded"><span class="glyph"></span>Grounded answer</span>
-        <span style="font-size:12px;color:var(--muted-2);">${data.used_hits} provision${data.used_hits===1?'':'s'} cited</span>
+        <span style="font-size:12px;color:var(--muted-2);">${data.used_hits} provision${data.used_hits===1?'':'s'} cited · rerank ${esc(data.rerank_status||'off')}</span>
       </div>
       <div class="answer-body">${formatAnswer(data.answer)}</div>
     </div>`;

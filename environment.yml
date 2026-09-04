@@ -17,6 +17,8 @@ dependencies:
       - langchain-mistralai>=0.2
       - langchain-qdrant>=0.2
       - qdrant-client>=1.12
+      # --- Second-stage cross-encoder reranking ---
+      - cohere>=7,<8
       # --- Day 5: orchestration (LangGraph) & tracing (LangSmith) ---
       - langgraph>=0.2
       - langsmith>=0.1
@@ -32,4 +34,4 @@ dependencies:
       - ragas>=0.4,<0.5
       - mlflow>=2.14
       - datasets>=2.19        # ragas transitive dep; pin explicitly
-      # later: cohere (Day 3-4 rerank, deferred), presidio (Day 10-11 PII)
+      # later: presidio (Day 10-11 PII)

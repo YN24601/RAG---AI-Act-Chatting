@@ -15,9 +15,9 @@ pinned: false
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
 [![Deploy](https://github.com/YN24601/RAG---AI-Act-Chatting/actions/workflows/sync-to-hf.yml/badge.svg)](https://github.com/YN24601/RAG---AI-Act-Chatting/actions/workflows/sync-to-hf.yml)
 [![Live Space](https://img.shields.io/badge/%F0%9F%A4%97%20Space-live-yellow)](https://yana24601-ai-act.hf.space)
-![Tests](https://img.shields.io/badge/tests-53%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-88%20passing-brightgreen)
 
-Legal question answering has an asymmetric cost function: a fabricated article number is far worse than "I don't know." This project builds the full RAG lifecycle around that constraint — **structure-aware retrieval with article-level provenance, a two-stage relevance gate, deterministic refusal, and a measured evaluation loop** — on a fully European stack (Mistral · Qdrant · Hugging Face).
+Legal question answering has an asymmetric cost function: a fabricated article number is far worse than "I don't know." This project builds the full RAG lifecycle around that constraint — **structure-aware retrieval with article-level provenance, optional cross-encoder reranking, a two-stage relevance gate, deterministic refusal, and a measured evaluation loop** — on a cloud-first stack (Mistral · Qdrant · Cohere · Hugging Face).
 
 - 🔗 **Live demo** — https://yana24601-ai-act.hf.space
 
@@ -27,6 +27,7 @@ Legal question answering has an asymmetric cost function: a fabricated article n
 
 - **Deterministic refusal.** A cheap score gate rejects out-of-scope questions *before* any LLM call; the answering model can only emit an `INSUFFICIENT_CONTEXT` sentinel, which a pure function maps to verbatim refusal text. Result: **100 % recall on 8 adversarial refusal traps, zero fabricated provisions.**
 - **Structure-aware chunking.** The regulation is parsed into 306 hierarchical legal units, so every retrieved chunk carries its Article / Annex / Recital number and chapter — answers cite real provisions instead of anonymous text spans.
+- **Auditable two-stage retrieval.** Qdrant recalls 20 candidates and optional Cohere `rerank-v4.0-pro` promotes the best five while preserving both vector and rerank scores. Obvious out-of-scope queries are rejected before the paid rerank call; transient reranker outages safely fall back to the measured vector baseline.
 - **Controlled A/B evaluation.** Two chunking strategies scored on a hand-authored 45-question gold set with RAGAS plus custom refusal metrics, tracked as nested MLflow runs and persisted as a LangSmith dataset for regression testing.
 - **Deployed, not just prototyped.** Multi-stage Docker image auto-synced to a Hugging Face Space through a **tokenless GitHub Actions OIDC pipeline**, with liveness/readiness probes and a non-leaking error contract.
 
@@ -48,17 +49,20 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    U(["User<br/>question"]) --> API["FastAPI<br/>POST /ask"] --> R["retrieve<br/>top-k 20 → top-n 5"]
+    U(["User<br/>question"]) --> API["FastAPI<br/>POST /ask"] --> R["Qdrant recall<br/>top-k 20"]
     Q[("Qdrant")] -.-> R
-    R --> G{"grade<br/>score gate<br/>→ LLM check"}
+    R --> SG{"vector<br/>score gate"}
+    SG -- pass --> RR["Cohere rerank<br/>top-n 5"]
+    SG -- fail --> RF
+    RR --> G{"LLM relevance<br/>grade"}
     G -- relevant --> GEN["generate<br/>grounded<br/>+ citations"]
-    G -- "below threshold<br/>/ irrelevant" --> RF["refuse<br/>verbatim text"]
+    G -- irrelevant --> RF["refuse<br/>verbatim text"]
     GEN -- "INSUFFICIENT_CONTEXT" --> RF
     GEN --> OUT["answer + sources<br/>+ refused flag"]
     RF --> OUT
 ```
 
-The runtime path (`retrieve → grade → generate | refuse`) is a **LangGraph** state machine; every node is traced to LangSmith. Network failures in hard dependencies collapse into a single `PipelineError` mapped to HTTP 503 — **an outage is never disguised as a refusal**, keeping `refused` a trustworthy signal for evaluation and auditing.
+The runtime path (`recall → score gate → rerank → grade → generate | refuse`) is a **LangGraph** state machine; every node is traced to LangSmith. Transient Cohere failures (`timeout`, connection errors, `429`, `500`, `503`, `504`) degrade to vector-only ranking and are marked `rerank_status=fallback`; configuration/authentication failures remain HTTP 503. **An outage is never disguised as a refusal**, keeping `refused` trustworthy for evaluation and auditing.
 
 ## Quickstart
 
@@ -66,11 +70,12 @@ The runtime path (`retrieve → grade → generate | refuse`) is a **LangGraph**
 conda env create -f environment.yml
 conda activate aiact-rag
 cp .env.example .env                   # MISTRAL_API_KEY / QDRANT_URL / QDRANT_API_KEY / LANGSMITH_*
+# Optional quality path: set RERANK_MODE=cohere and COHERE_API_KEY in .env
 
 python scripts/run_ingestion.py        # fetch → parse → chunk
 python scripts/build_index.py          # embed (Mistral) → index into Qdrant
 python scripts/ask.py "What AI practices are prohibited?"   # full QA loop
-pytest -q                              # 53 offline tests, no network required
+pytest -q                              # 88 offline tests, no network required
 
 PYTHONPATH=src uvicorn api.app:app --port 8000   # then open http://localhost:8000/
 ```
@@ -87,8 +92,8 @@ curl localhost:8000/health             # {"status":"ok"}
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /ask` | Full QA loop → `{answer, refused, grade, grade_reason, used_hits, sources[]}` |
-| `POST /query` | Retrieval only (debugging / strategy comparison) |
+| `POST /ask` | Full QA loop, including rerank status and dual-score source provenance |
+| `POST /query` | Retrieval debugging; accepts optional `rerank: true/false` override |
 | `GET /health` | Liveness; `?ready=1` also probes Qdrant reachability |
 | `GET /` | Same-origin static front-end |
 
@@ -111,11 +116,13 @@ Structure-aware chunking wins on **grounding** (faithfulness) and **refusal robu
 
 ```bash
 python scripts/evaluate.py --strategy all --pause 0.6 --langsmith-upload
+python scripts/evaluate.py --strategy all --rerank all --langsmith-upload
+python scripts/evaluate.py --strategy structure --rerank all --enforce-rerank-gate
 python scripts/evaluate.py --strategy "structure" --pause 0.6 --langsmith-upload
 mlflow ui   # experiment "aiact-rag-eval": parent run + nested per-strategy runs
 ```
 
-> Caveat: n=37 answered, single run, LLM-as-judge noise. Differences around ~0.03 should not be over-read.
+> These published numbers predate reranking and were computed before the harness was corrected to score only the exact `answer_hits` sent to generation. New `off`/`cohere` runs must therefore be compared with each other, not directly against this historical table. The evaluator also logs deterministic `candidate_recall@20`, `hit_rate@5`, `reference_recall@5`, `MRR@5`, and `nDCG@5` for structure-aware chunks.
 
 ## Project structure
 
@@ -123,30 +130,31 @@ mlflow ui   # experiment "aiact-rag-eval": parent run + nested per-strategy runs
 data/raw/          Source HTML snapshot + fetch metadata (committed — corpus version lock)
 data/eval/         eval_set.jsonl — 45-question gold set with refusal traps
 src/ingestion/     schema · fetch · parse · chunk
-src/retrieval/     config · embeddings · index · retriever      (Qdrant + Mistral)
+src/retrieval/     config · embeddings · index · retriever · reranker (Qdrant + Mistral + Cohere)
 src/generation/    config · llm · prompts · grade · graph · errors  (LangGraph + LangSmith)
 src/api/           app · schemas · static/index.html            (FastAPI + same-origin UI)
 src/evaluation/    schema · harness · aggregate · refusal · ragas_eval · tracking
 scripts/           run_ingestion · build_index · query · ask · evaluate
-tests/             53 offline pytest assertions
+tests/             88 offline pytest assertions + opt-in live Cohere smoke test
 Dockerfile         Multi-stage build + HEALTHCHECK
 ```
 
 ## Tech stack
 
-`Python 3.11` · `LangChain` / `LangGraph` · `Mistral` (mistral-embed, mistral-small) · `Qdrant Cloud` · `FastAPI` · `Pydantic v2` · `Docker` · `RAGAS` · `MLflow` · `LangSmith` · `GitHub Actions (OIDC)` · `Hugging Face Spaces`
+`Python 3.11` · `LangChain` / `LangGraph` · `Mistral` (mistral-embed, mistral-small) · `Qdrant Cloud` · `Cohere Rerank` · `FastAPI` · `Pydantic v2` · `Docker` · `RAGAS` · `MLflow` · `LangSmith` · `GitHub Actions (OIDC)` · `Hugging Face Spaces`
 
 ## Roadmap
 
 - [x] Ingestion & preprocessing — HTML → 306 structured legal units → two chunking strategies
-- [x] Embedding + Qdrant indexing + filtered vector retrieval (rerank slot reserved)
+- [x] Embedding + Qdrant indexing + filtered vector retrieval
+- [x] Cohere cross-encoder reranking with dual-score provenance and vector fallback
 - [x] LangGraph orchestration + grounded generation + LangSmith tracing
 - [x] FastAPI service + same-origin UI + multi-stage Docker + HF Space deployment *(verified live)*
 - [x] RAGAS evaluation + refusal metrics + MLflow + LangSmith dataset
 - [ ] Compliance layer — source attribution, PII handling, audit logging
 - [ ] Polished demo
 
-**Deliberately deferred**: Cohere reranking (the slot is currently an identity passthrough), hybrid dense+sparse retrieval, paragraph-level citation granularity, auth/rate limiting, and a pytest CI gate.
+**Deliberately deferred**: hybrid dense+sparse retrieval, calibrated rerank-score filtering, paragraph-level citation granularity, auth/rate limiting, and a pytest CI gate.
 
 ## Corpus version & disclaimer
 

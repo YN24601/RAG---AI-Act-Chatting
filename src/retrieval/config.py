@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -17,7 +18,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
 QDRANT_URL = os.environ.get("QDRANT_URL")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
-COHERE_API_KEY = os.environ.get("COHERE_API_KEY")  # RESERVED, not consumed: rerank is an identity passthrough (Retriever._rerank); no code reads this yet
+COHERE_API_KEY = os.environ.get("COHERE_API_KEY")
 
 # --- Model / vector params ---
 EMBED_MODEL = "mistral-embed"
@@ -62,7 +63,22 @@ CHUNK_PATHS = {"baseline": CHUNKS_BASELINE_PATH, "structure": CHUNKS_STRUCTURE_P
 
 # --- Retrieval defaults ---
 DEFAULT_K = 20  # vector recall depth
-DEFAULT_TOP_N = 5  # returned after (future) rerank
+DEFAULT_TOP_N = 5  # returned after second-stage reranking
+
+# --- Reranking ---
+RERANK_MODE = os.environ.get("RERANK_MODE", "off").strip().lower()
+RERANK_MODEL = os.environ.get("RERANK_MODEL", "rerank-v4.0-pro").strip()
+RERANK_TIMEOUT_S = float(os.environ.get("RERANK_TIMEOUT_S", "3.0"))
+
+
+def resolve_rerank_enabled(mode: Optional[str] = None, override: Optional[bool] = None) -> bool:
+    """Resolve the deployment mode plus an explicit debug/evaluation override."""
+    if override is not None:
+        return override
+    normalized = (RERANK_MODE if mode is None else mode).strip().lower()
+    if normalized not in {"off", "cohere"}:
+        raise ValueError("RERANK_MODE must be either 'off' or 'cohere'")
+    return normalized == "cohere"
 
 
 def require(name: str) -> str:

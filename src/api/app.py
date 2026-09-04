@@ -21,9 +21,9 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from generation.errors import PipelineError
-from generation.grade import select_answer_hits
 from generation.graph import _get_retriever, answer_question
 from retrieval import config as retrieval_config
+from retrieval.retriever import RerankExecutionError
 
 from .schemas import (
     AskRequest,
@@ -71,16 +71,16 @@ def ask(req: AskRequest) -> AskResponse:
     hits = state.get("hits", []) or []
     refused = bool(state.get("refused", False))
 
-    # Mark which recalled hits actually grounded the answer. select_answer_hits is
-    # the same pure trim the generate node uses; on the refuse path nothing was used.
-    used_ids = set()
-    if not refused:
-        used_ids = {h.chunk_id for h in select_answer_hits(hits)}
+    # Use the graph's authoritative list rather than re-deriving selection from
+    # scores (reranked and vector-fallback paths intentionally select differently).
+    used_ids = {h.chunk_id for h in state.get("answer_hits", [])} if not refused else set()
 
     sources = [
         Source(
             rank=h.rank,
             score=h.score,
+            retrieval_rank=h.retrieval_rank or h.rank,
+            rerank_score=h.rerank_score,
             citation=h.metadata.get("context_header"),
             chapter=h.metadata.get("chapter"),
             unit_type=h.metadata.get("unit_type"),
@@ -97,16 +97,20 @@ def ask(req: AskRequest) -> AskResponse:
         grade=state.get("grade"),
         grade_reason=state.get("grade_reason"),
         used_hits=state.get("used_hits", 0),
+        rerank_status=state.get("rerank_status", "off"),
+        rerank_model=state.get("rerank_model"),
+        rerank_latency_ms=state.get("rerank_latency_ms", 0.0),
+        rerank_failure_reason=state.get("rerank_failure_reason"),
         sources=sources,
     )
 
 
 @app.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest) -> QueryResponse:
-    """Pure vector retrieval — for debugging / comparing chunking strategies."""
+    """Retrieval debugging endpoint with an optional rerank override."""
     retriever = _get_retriever(req.strategy)  # cached per strategy
     try:
-        hits = retriever.search(
+        outcome = retriever.search_with_outcome(
             req.question,
             k=req.k,
             top_n=req.top_n,
@@ -114,7 +118,10 @@ def query(req: QueryRequest) -> QueryResponse:
             number_min=req.number_min,
             number_max=req.number_max,
             min_score=req.min_score,
+            rerank=req.rerank,
         )
+    except RerankExecutionError as e:
+        raise PipelineError("rerank", "reranker configuration is invalid or unavailable") from e
     except Exception as e:  # noqa: BLE001 — boundary: surface as a controlled 503
         raise PipelineError("retrieve", "vector store is unavailable") from e
 
@@ -123,14 +130,20 @@ def query(req: QueryRequest) -> QueryResponse:
             QueryHit(
                 rank=h.rank,
                 score=h.score,
+                retrieval_rank=h.retrieval_rank or h.rank,
+                rerank_score=h.rerank_score,
                 citation=h.metadata.get("context_header"),
                 chapter=h.metadata.get("chapter"),
                 unit_type=h.metadata.get("unit_type"),
                 chunk_id=h.chunk_id,
                 text=h.text,
             )
-            for h in hits
-        ]
+            for h in outcome.hits
+        ],
+        rerank_status=outcome.status,
+        rerank_model=outcome.model,
+        rerank_latency_ms=outcome.latency_ms,
+        rerank_failure_reason=outcome.failure_reason,
     )
 
 
