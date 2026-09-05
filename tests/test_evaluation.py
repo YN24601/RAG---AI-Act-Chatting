@@ -10,15 +10,24 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 import pytest  # noqa: E402
 
-from evaluation.aggregate import is_answered, latency_summary, partition_for_ragas, percentile  # noqa: E402
+from evaluation.aggregate import (  # noqa: E402
+    is_answered,
+    latency_summary,
+    partition_for_ragas,
+    percentile,
+    rerank_release_gate,
+    retrieval_quality,
+)
 from evaluation.harness import run_over_set  # noqa: E402
 from evaluation.refusal import refusal_scores  # noqa: E402
 from evaluation.schema import EVAL_SET_PATH, EvalItem, eval_set_hash, load_eval_set  # noqa: E402
 from evaluation.tracking import build_comparison_table  # noqa: E402
+from scripts.evaluate import effective_pause, evaluation_configs, paired_structure_gate  # noqa: E402
 
 
 # ---------------- refusal metric ----------------
@@ -125,10 +134,16 @@ def test_committed_eval_set_is_valid():
 
 def _fake_state(answer, refused, hits_text):
     class _H:
-        def __init__(self, t):
+        def __init__(self, t, unit_type="article", number="5"):
             self.text = t
+            self.metadata = {"unit_type": unit_type, "number": number}
+            self.chunk_id = t
     return {"answer": answer, "refused": refused, "grade": "relevant" if not refused else "irrelevant",
-            "hits": [_H(t) for t in hits_text]}
+            "candidates": [_H("candidate")],
+            "hits": [_H("not-sent-to-generation"), *[_H(t) for t in hits_text]],
+            "answer_hits": [_H(t) for t in hits_text],
+            "rerank_status": "applied", "rerank_model": "rerank-test",
+            "rerank_latency_ms": 7.5}
 
 
 def test_run_over_set_and_partition_offline():
@@ -137,7 +152,7 @@ def test_run_over_set_and_partition_offline():
         EvalItem(id="ref", question="q2", category="out_of_scope", ground_truth="g", should_refuse=True),
     ]
 
-    def runner(question, strategy):
+    def runner(question, strategy, rerank=None):
         if question == "q1":
             return _fake_state("Article 5 says ...", False, ["ctx a", "ctx b"])
         return _fake_state("<refusal>", True, [])
@@ -145,6 +160,8 @@ def test_run_over_set_and_partition_offline():
     results = run_over_set(items, "structure", runner=runner, progress=False)
     assert [r.refused for r in results] == [False, True]
     assert results[0].contexts == ["ctx a", "ctx b"]
+    assert [h.text for h in results[0].candidate_hits] == ["candidate"]
+    assert results[0].rerank_status == "applied"
 
     answered, other = partition_for_ragas(results)
     assert [r.item.id for r in answered] == ["ans"]
@@ -155,7 +172,7 @@ def test_run_over_set_and_partition_offline():
 def test_run_over_set_captures_errors_without_aborting():
     items = [EvalItem(id="boom", question="q", category="prohibited", ground_truth="g")]
 
-    def runner(question, strategy):
+    def runner(question, strategy, rerank=None):
         raise RuntimeError("qdrant down")
 
     results = run_over_set(items, "structure", runner=runner, progress=False)
@@ -170,13 +187,49 @@ def test_latency_summary_splits_by_branch():
         EvalItem(id="b", question="q2", category="out_of_scope", ground_truth="g", should_refuse=True),
     ]
 
-    def runner(question, strategy):
+    def runner(question, strategy, rerank=None):
         return _fake_state("ans", question == "q2", ["c"])
 
     results = run_over_set(items, "structure", runner=runner, progress=False)
     summ = latency_summary(results)
     assert summ["answer_branch"]["n"] == 1
     assert summ["refuse_branch"]["n"] == 1
+
+
+def test_retrieval_quality_scores_reference_units_at_candidate_and_final_depths():
+    class H:
+        def __init__(self, unit_type, number):
+            self.metadata = {"unit_type": unit_type, "number": number}
+
+    item_a = EvalItem(
+        id="a", question="q", category="high_risk", ground_truth="g",
+        reference_units=["Article 6", "Annex III"],
+    )
+    item_b = EvalItem(
+        id="b", question="q", category="definition", ground_truth="g",
+        reference_units=["Article 3"],
+    )
+
+    class Result:
+        pass
+
+    a = Result()
+    a.item, a.error = item_a, ""
+    a.candidate_hits = [H("article", "6"), H("annex", "III")]
+    a.final_hits = [H("article", "6"), H("article", "99"), H("annex", "III")]
+    b = Result()
+    b.item, b.error = item_b, ""
+    b.candidate_hits = [H("article", "3")]
+    b.final_hits = [H("article", "99")]
+
+    metrics = retrieval_quality([a, b])
+
+    assert metrics["n_scored"] == 2
+    assert metrics["candidate_recall_at_20"] == 1.0
+    assert metrics["hit_rate_at_5"] == 0.5
+    assert metrics["reference_recall_at_5"] == 0.5
+    assert metrics["mrr_at_5"] == 0.5
+    assert 0.45 < metrics["ndcg_at_5"] < 0.5
 
 
 # ---------------- comparison table ----------------
@@ -193,3 +246,82 @@ def test_build_comparison_table_shape():
     assert "| metric | baseline | structure |" in table
     assert "context_precision" in table
     assert "0.600" in table and "0.800" in table  # per-strategy precision cells
+
+
+def test_evaluation_matrix_expands_strategy_and_rerank_axes():
+    assert evaluation_configs("all", "all") == [
+        ("baseline", False),
+        ("baseline", True),
+        ("structure", False),
+        ("structure", True),
+    ]
+    assert evaluation_configs("structure", "cohere") == [("structure", True)]
+
+
+def test_cohere_evaluation_enforces_trial_safe_pacing():
+    assert effective_pause(False, 0.0) == 0.0
+    assert effective_pause(True, 0.0) == 6.5
+    assert effective_pause(True, 8.0) == 8.0
+
+
+def _release_summary(*, rerank, precision, recall, faithfulness, refusal_recall=1.0,
+                     false_negatives=0, answer_p95=3.0, candidate_recall=0.97,
+                     fallbacks=0, applied=37):
+    return {
+        "params": {"rerank": rerank},
+        "ragas": {
+            "llm_context_precision_with_reference": precision,
+            "context_recall": recall,
+            "faithfulness": faithfulness,
+        },
+        "refusal": {"recall": refusal_recall, "false_negatives": false_negatives},
+        "latency": {"answer_branch": {"p95": answer_p95}},
+        "retrieval": {"candidate_recall_at_20": candidate_recall},
+        "rerank": {"fallback_count": fallbacks, "applied_count": applied},
+    }
+
+
+def test_rerank_release_gate_passes_all_acceptance_thresholds():
+    off = _release_summary(rerank="off", precision=0.85, recall=0.82,
+                           faithfulness=0.98, answer_p95=3.2)
+    on = _release_summary(rerank="cohere", precision=0.89, recall=0.81,
+                          faithfulness=0.975, answer_p95=4.0)
+
+    gate = rerank_release_gate(off, on)
+
+    assert gate["passed"] is True
+    assert all(check["passed"] for check in gate["checks"].values())
+    assert gate["rerank_ceiling"]["limited"] is False
+
+
+def test_rerank_release_gate_fails_and_records_low_candidate_recall_ceiling():
+    off = _release_summary(rerank="off", precision=0.85, recall=0.82,
+                           faithfulness=0.98, answer_p95=3.2)
+    on = _release_summary(
+        rerank="cohere", precision=0.87, recall=0.79, faithfulness=0.95,
+        refusal_recall=0.9, false_negatives=1, answer_p95=4.5,
+        candidate_recall=0.9, fallbacks=1,
+    )
+
+    gate = rerank_release_gate(off, on)
+
+    assert gate["passed"] is False
+    assert gate["checks"]["context_precision_delta"]["passed"] is False
+    assert gate["checks"]["healthy_reranker"]["passed"] is False
+    assert gate["rerank_ceiling"] == {
+        "limited": True,
+        "candidate_recall_at_20": 0.9,
+        "next_step": "prioritize hybrid retrieval before further reranker tuning",
+    }
+
+
+def test_paired_structure_gate_ignores_baseline_and_requires_both_modes():
+    off = _release_summary(rerank="off", precision=0.85, recall=0.82,
+                           faithfulness=0.98, answer_p95=3.2)
+    on = _release_summary(rerank="cohere", precision=0.89, recall=0.81,
+                          faithfulness=0.975, answer_p95=4.0)
+    off["strategy"] = on["strategy"] = "structure"
+    baseline = dict(off, strategy="baseline")
+
+    assert paired_structure_gate([baseline, off]) is None
+    assert paired_structure_gate([baseline, off, on])["passed"] is True

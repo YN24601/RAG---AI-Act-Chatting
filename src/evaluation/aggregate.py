@@ -10,6 +10,7 @@ Two jobs:
 """
 from __future__ import annotations
 
+import math
 from typing import List, Sequence, Tuple
 
 
@@ -61,4 +62,168 @@ def latency_summary(results: Sequence) -> dict:
         "overall": _stats(all_lat),
         "answer_branch": _stats(ans_lat),
         "refuse_branch": _stats(ref_lat),
+    }
+
+
+def _reference_unit(hit) -> str:
+    metadata = getattr(hit, "metadata", {})
+    unit_type = str(metadata.get("unit_type", "")).strip()
+    number = str(metadata.get("number", "")).strip()
+    if not unit_type or not number:
+        return ""
+    return f"{unit_type.title()} {number}".casefold()
+
+
+def retrieval_quality(results: Sequence, candidate_k: int = 20, final_k: int = 5) -> dict:
+    """Macro-average deterministic reference-unit metrics for answerable items."""
+    rows = [
+        result
+        for result in results
+        if not getattr(result, "error", "")
+        and not result.item.should_refuse
+        and result.item.reference_units
+    ]
+    if not rows:
+        return {
+            "n_scored": 0,
+            "candidate_recall_at_20": 0.0,
+            "hit_rate_at_5": 0.0,
+            "reference_recall_at_5": 0.0,
+            "mrr_at_5": 0.0,
+            "ndcg_at_5": 0.0,
+        }
+
+    candidate_recalls = []
+    hit_rates = []
+    final_recalls = []
+    reciprocal_ranks = []
+    ndcgs = []
+    for result in rows:
+        references = {value.casefold() for value in result.item.reference_units}
+        candidate_units = {
+            _reference_unit(hit)
+            for hit in result.candidate_hits[:candidate_k]
+            if _reference_unit(hit)
+        }
+        candidate_recalls.append(len(references & candidate_units) / len(references))
+
+        gains = []
+        seen_units: set[str] = set()
+        for hit in result.final_hits[:final_k]:
+            unit = _reference_unit(hit)
+            gain = 1 if unit in references and unit not in seen_units else 0
+            gains.append(gain)
+            if unit:
+                seen_units.add(unit)
+        matched = sum(gains)
+        hit_rates.append(float(matched > 0))
+        final_recalls.append(matched / len(references))
+        first = next((rank for rank, gain in enumerate(gains, 1) if gain), None)
+        reciprocal_ranks.append(1.0 / first if first else 0.0)
+        dcg = sum(gain / math.log2(rank + 1) for rank, gain in enumerate(gains, 1))
+        ideal_count = min(len(references), final_k)
+        idcg = sum(1.0 / math.log2(rank + 1) for rank in range(1, ideal_count + 1))
+        ndcgs.append(dcg / idcg if idcg else 0.0)
+
+    mean = lambda values: round(sum(values) / len(values), 4)
+    return {
+        "n_scored": len(rows),
+        "candidate_recall_at_20": mean(candidate_recalls),
+        "hit_rate_at_5": mean(hit_rates),
+        "reference_recall_at_5": mean(final_recalls),
+        "mrr_at_5": mean(reciprocal_ranks),
+        "ndcg_at_5": mean(ndcgs),
+    }
+
+
+def rerank_release_gate(off: dict, on: dict) -> dict:
+    """Evaluate the paired structure off/on run against rollout thresholds.
+
+    The caller must supply summaries produced from the same code version and eval
+    set. Missing RAGAS metrics fail loudly instead of turning a ``--no-ragas``
+    smoke run into a misleading rollout decision.
+    """
+    ragas_keys = {
+        "llm_context_precision_with_reference",
+        "context_recall",
+        "faithfulness",
+    }
+    for label, summary in (("off", off), ("cohere", on)):
+        missing = ragas_keys - set(summary.get("ragas", {}))
+        if missing:
+            raise ValueError(f"{label} summary lacks required RAGAS metrics: {sorted(missing)}")
+
+    off_ragas, on_ragas = off["ragas"], on["ragas"]
+    precision_delta = round((
+        on_ragas["llm_context_precision_with_reference"]
+        - off_ragas["llm_context_precision_with_reference"]
+    ), 10)
+    recall_delta = round(on_ragas["context_recall"] - off_ragas["context_recall"], 10)
+    faithfulness_delta = round(on_ragas["faithfulness"] - off_ragas["faithfulness"], 10)
+    latency_delta = round((
+        on["latency"]["answer_branch"]["p95"]
+        - off["latency"]["answer_branch"]["p95"]
+    ), 10)
+    healthy = (
+        on.get("rerank", {}).get("fallback_count", 0) == 0
+        and on.get("rerank", {}).get("applied_count", 0) > 0
+    )
+
+    def check(passed: bool, actual, requirement: str) -> dict:
+        return {"passed": bool(passed), "actual": actual, "requirement": requirement}
+
+    checks = {
+        "context_precision_delta": check(
+            precision_delta >= 0.03,
+            round(precision_delta, 4),
+            ">= +0.03",
+        ),
+        "context_recall_delta": check(
+            recall_delta >= -0.02,
+            round(recall_delta, 4),
+            ">= -0.02",
+        ),
+        "faithfulness_delta": check(
+            faithfulness_delta >= -0.01,
+            round(faithfulness_delta, 4),
+            ">= -0.01",
+        ),
+        "refusal_recall": check(
+            on["refusal"]["recall"] == 1.0,
+            on["refusal"]["recall"],
+            "== 1.00",
+        ),
+        "under_refusals": check(
+            on["refusal"]["false_negatives"] == 0,
+            on["refusal"]["false_negatives"],
+            "== 0",
+        ),
+        "healthy_reranker": check(
+            healthy,
+            {
+                "fallback_count": on.get("rerank", {}).get("fallback_count", 0),
+                "applied_count": on.get("rerank", {}).get("applied_count", 0),
+            },
+            "fallback_count == 0 and applied_count > 0",
+        ),
+        "answered_p95_latency_delta_s": check(
+            latency_delta <= 1.0,
+            round(latency_delta, 4),
+            "<= +1.0s",
+        ),
+    }
+    candidate_recall = on.get("retrieval", {}).get("candidate_recall_at_20", 0.0)
+    limited = candidate_recall < 0.95
+    return {
+        "passed": all(item["passed"] for item in checks.values()),
+        "checks": checks,
+        "rerank_ceiling": {
+            "limited": limited,
+            "candidate_recall_at_20": candidate_recall,
+            "next_step": (
+                "prioritize hybrid retrieval before further reranker tuning"
+                if limited
+                else "rerank candidate ceiling is acceptable"
+            ),
+        },
     }

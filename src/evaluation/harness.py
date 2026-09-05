@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Callable, List
+from typing import Any, Callable, List, Optional
 
 from generation.graph import answer_question
 
@@ -30,20 +30,27 @@ class RunResult:
     refused: bool
     grade: str
     contexts: List[str] = field(default_factory=list)  # retrieved hit texts -> RAGAS
+    candidate_hits: List[Any] = field(default_factory=list)
+    final_hits: List[Any] = field(default_factory=list)
+    rerank_status: str = "off"
+    rerank_model: Optional[str] = None
+    rerank_latency_ms: float = 0.0
+    rerank_failure_reason: Optional[str] = None
     latency_s: float = 0.0
     error: str = ""  # set if the pipeline raised (e.g. PipelineError); result still recorded
 
 
-def _default_runner(question: str, strategy: str) -> dict:
-    return answer_question(question, strategy=strategy)
+def _default_runner(question: str, strategy: str, rerank: Optional[bool] = None) -> dict:
+    return answer_question(question, strategy=strategy, rerank=rerank)
 
 
 def run_over_set(
     items: List[EvalItem],
     strategy: str,
-    runner: Callable[[str, str], dict] = _default_runner,
+    runner: Callable[[str, str, Optional[bool]], dict] = _default_runner,
     progress: bool = True,
     pause_s: float = 0.0,
+    rerank: Optional[bool] = None,
 ) -> List[RunResult]:
     """Execute `strategy` over every item, timing each call.
 
@@ -62,9 +69,10 @@ def run_over_set(
             time.sleep(pause_s)
         t0 = time.perf_counter()
         try:
-            state = runner(item.question, strategy)
+            state = runner(item.question, strategy, rerank)
             latency = time.perf_counter() - t0
             hits = state.get("hits", []) or []
+            answer_hits = state.get("answer_hits", []) or []
             results.append(
                 RunResult(
                     item=item,
@@ -72,7 +80,13 @@ def run_over_set(
                     answer=state.get("answer", ""),
                     refused=bool(state.get("refused", False)),
                     grade=state.get("grade", ""),
-                    contexts=[h.text for h in hits],
+                    contexts=[h.text for h in answer_hits],
+                    candidate_hits=state.get("candidates", []) or [],
+                    final_hits=hits,
+                    rerank_status=state.get("rerank_status", "off"),
+                    rerank_model=state.get("rerank_model"),
+                    rerank_latency_ms=float(state.get("rerank_latency_ms", 0.0)),
+                    rerank_failure_reason=state.get("rerank_failure_reason"),
                     latency_s=round(latency, 4),
                 )
             )

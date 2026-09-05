@@ -84,7 +84,7 @@ structure      408   270.5   233.5    508
 - **Embedding**：Mistral `mistral-embed`（1024 维，全欧洲栈）。
 - **向量库**：Qdrant Cloud，两套 chunk 各建一个 collection（`aiact_baseline` / `aiact_structure`），便于 Day 8-9 直接对比检索质量。点 id 用 `uuid5(chunk_id)` 确定性生成，重建即 upsert 不产生重复。维度/距离由 `config.EMBED_DIM/DISTANCE` 显式驱动并在建库时校验。
 - **幂等**：以 chunk 文件的 **sha256 内容指纹**（记于 `data/processed/.index_meta.json`）判断是否需要重建——内容变了即使条数不变也会自动重建，避免留下旧向量；`--recreate` 强制重建。
-- **检索**：向量召回 top-k（默认 20）→ **rerank 插槽（本版为 identity passthrough，已预留 Cohere）** → top-n（默认 5）。支持 `unit_type` + 条款号区间（`number_int`）组合过滤与 `min_score` 阈值（Qdrant 对 payload 字段 `unit_type/number_int` 自动建索引）。
+- **检索**：Qdrant vector recall top-k（默认 20）→ cosine score gate → optional Cohere `rerank-v4.0-pro` → top-n（默认 5）。保留 `retrieval_rank`/`score` 与 `rerank_score` 两套 provenance；timeout、connection error、429/500/503/504 自动 fallback 到 vector ranking，认证与配置错误 fail loud。
 
 ```bash
 python scripts/build_index.py                          # 索引两套（--recreate 强制重建）
@@ -104,7 +104,7 @@ python scripts/query.py "high-risk" --unit-type article --number-min 6 --number-
 
 纯 dense 检索对**精确术语/条款号**（"deployer"、"general-purpose AI model"、"Article 5(1)(h)"）的关键词匹配易漏，而这在法律问答里很关键。Qdrant + langchain-qdrant 原生支持 `RetrievalMode.HYBRID`（FastEmbed 稀疏向量，如 BM25/SPLADE），可把 dense 语义召回与 sparse 关键词召回融合——需加 `fastembed` 依赖并重建带稀疏向量的 collection。
 
-> 注：Hybrid 是**项目自加轴**（原始方案未列）。Day 8-9 首版评测表实际只跑了 **chunking 轴**（baseline vs structure，rerank 两配置均为 off）；rerank 开/关与 dense vs hybrid 作为额外行，留待 Cohere / 稀疏向量接入后再补，不阻塞主线。
+> 注：Hybrid 是**项目自加轴**（原始方案未列）。当前 evaluator 已支持 `chunking × rerank` 矩阵；dense vs hybrid 仍留待稀疏向量接入后评测。
 
 ---
 
@@ -191,7 +191,7 @@ PYTHONPATH=src uvicorn api.app:app --port 8000      # --reload 可开发热重�
 | `GET /` | 同源前端静态页 | `StaticFiles` |
 
 - **请求** `POST /ask`：`{question: str, strategy: "structure"|"baseline" = "structure", show_context: bool = false}`。
-- **响应**：`{answer, refused, grade, grade_reason, used_hits, sources: [...]}`，其中 `sources[i] = {rank, score, citation(=context_header), chapter, unit_type, chunk_id, used}`——引用信息直接取自 `Hit.metadata`，前端零加工即可渲染 Article/Recital 溯源。
+- **响应**：`{answer, refused, grade, grade_reason, used_hits, rerank_status, rerank_model, rerank_latency_ms, sources: [...]}`。`sources[i]` 同时给出 final `rank`、原始 `retrieval_rank`、Qdrant `score` 与 optional `rerank_score`，避免混用两种不可比较的 score scale。
 - 命名说明：项目 CLI 里 `ask`=全流程、`query`=纯检索，故主端点定为 **`/ask`**（早期草稿写的是 `/query`，此处对齐 CLI 语义）。
 
 ### 统一错误响应（接 Day 5 的 `PipelineError`）
@@ -207,7 +207,7 @@ Day 5 已把图里硬依赖（`retrieve`/`generate`）的网络故障收敛成�
 
 `src/api/static/index.html`，原生 JS，无 Node 构建、无 CORS、单镜像：
 
-- 页面：问句框 + `strategy` 开关 + 答案 + `refused` 徽标 + 来源列表（标注被 `select_answer_hits` 丢弃的弱尾）+ 可选 `show_context`；引用列表由 `context_header`/`chapter` 现成渲染。
+- 页面：问句框 + `strategy` 开关 + 答案 + `refused` 徽标 + 来源列表 + optional `show_context`；来源卡同时显示 vector/rerank score，并标明本次 `rerank_status`。
 - **为 Day 10-11 合规层预留 UI 占位**：① **Transparency Notice**（常驻声明「AI 输出、可能出错、非法律意见」）；② 来源溯源面板（Article/Recital + 原文片段）——Day 10-11 直接填，本阶段先留位。另：拒答时页面展示的 `REFUSAL_TEXT` 已含「请咨询专业人士」，**天然满足合规清单的「人类监督」项**。
 - 唯一体验考量：延迟（实测 ~3s 作答 / ~0.8s 拒答）→ 加 loading 态；感知提速可后续上 SSE 流式（暂列可选）。
 
@@ -252,7 +252,7 @@ curl localhost:8000/health                                # {"status":"ok"}
 
 ## Day 8-9：评测
 
-把 Day 5 的问答闭环放到 **RAGAS + 自定义拒答指标** 下量化，用 **MLflow** 记录每个配置、**LangSmith dataset** 持久化评测集做可回归的在线 eval。评测轴锁定 **chunking（baseline vs structure）**；rerank 本版仍是 identity passthrough，两配置都诚实记为 `rerank=off`（Cohere 留待后续）。
+把完整问答闭环放到 **RAGAS + deterministic retrieval metrics + 自定义拒答指标** 下量化，用 **MLflow** 记录 `chunking × rerank` 每个配置、**LangSmith dataset** 持久化评测集。RAGAS contexts 只取实际送入 generation prompt 的 `answer_hits`，不再把被 trim 的 hits 算入 context quality。
 
 ### 评测集
 
@@ -337,9 +337,9 @@ ragas（至 0.4.x）在导入期硬引 `langchain_community.chat_models.vertexai
 
 **【已解决】分数阈值硬编码假设 Cosine，但 `config.DISTANCE` 是「权威配置」**
 
-`Retriever.search` 的 `s >= min_score`、`score_gate` 的 `hits[0].score >= 0.65`、`GRADE_MIN_SCORE` 全部假设「相似度越大越相关」。Day 3-4 让 `DISTANCE` 变成 config 驱动并在建库生效，但**检索侧打分语义没跟着走**：一旦改成 `"Euclid"`，Qdrant 返回的是距离（越小越好），所有 gate 逻辑**静默反转**且无报错。
+`Retriever.recall` 的 `s >= min_score`、`score_gate` 的 `hits[0].score >= 0.65`、`GRADE_MIN_SCORE` 全部假设「Qdrant cosine similarity 越大越相关」。Cohere `rerank_score` 是独立且 query-dependent 的 scale，当前只用于排序，绝不进入这些阈值判断。
 
-*解法*：把「分数方向 + 阈值标定的距离度量」集中成单一权威——`config.SCORE_CALIBRATED_DISTANCE`（= 标定阈值所用的度量）与纯函数 `config.assert_score_threshold_semantics()`，并在每个阈值比较处（`Retriever.search` 的 `min_score`、`score_gate`、`select_answer_hits`）调用。阈值的「方向」与「量纲」都与 Cosine 绑定，故一旦 `DISTANCE` 偏离标定度量即**显式报错**（提示重新标定并翻转比较方向），不再静默反转。测试覆盖 Cosine 通过 / Euclid 抛错两路径。
+*解法*：把「分数方向 + 阈值标定的距离度量」集中成单一权威——`config.SCORE_CALIBRATED_DISTANCE` 与 `config.assert_score_threshold_semantics()`，并在每个 vector threshold 比较处调用。`Hit.score` 保持 Qdrant cosine 语义，`Hit.rerank_score` 单独记录，防止两种分数被误比较。
 
 **【已解决】图里网络调用零异常处理**
 
@@ -366,7 +366,7 @@ top hit 过阈值后，其余弱块（哪怕 ~0.4）也进 context，稀释答�
 
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
-| Rerank | 插槽预留，identity passthrough | Cohere 未接入；评测表两配置均记 `rerank=off` |
+| Rerank | Direct Cohere SDK boundary | `rerank-v4.0-pro`；pre-rerank score gate；transient fallback；dual-score tracing |
 | Hybrid 检索（dense + sparse） | 未做 | 需加 `fastembed` 并重建带稀疏向量的 collection |
 | 段落级（paragraph）粒度 | 未做 | 引用精确到 `Art 6(2)` 需补段落级抽取 |
 | 鉴权 / 限流 | 未做 | Demo 场景非必需 |

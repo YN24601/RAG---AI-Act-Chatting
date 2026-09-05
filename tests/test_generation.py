@@ -19,6 +19,7 @@ from generation.graph import build_graph, finalize_answer  # noqa: E402
 from generation.grade import score_gate, select_answer_hits  # noqa: E402
 from generation.prompts import format_context  # noqa: E402
 from retrieval import config as retrieval_config  # noqa: E402
+from retrieval.reranker import RerankOutcome  # noqa: E402
 from retrieval.retriever import Hit  # noqa: E402
 
 
@@ -121,7 +122,7 @@ def test_finalize_answer_maps_sentinel_to_verbatim_refusal():
 def test_graph_compiles_with_expected_nodes():
     graph = build_graph()
     nodes = set(graph.get_graph().nodes)
-    assert {"retrieve", "grade", "generate", "refuse"} <= nodes
+    assert {"retrieve", "score_gate", "rerank", "grade", "generate", "refuse"} <= nodes
 
 
 def test_retrieve_wraps_network_error_as_pipeline_error(monkeypatch):
@@ -130,7 +131,7 @@ def test_retrieve_wraps_network_error_as_pipeline_error(monkeypatch):
     def boom(*a, **k):
         raise ConnectionError("qdrant down")
 
-    monkeypatch.setattr(graph_mod, "_run_retrieval", boom)
+    monkeypatch.setattr(graph_mod, "_run_recall", boom)
     with pytest.raises(PipelineError) as ei:
         graph_mod.retrieve({"question": "q", "strategy": "structure"})
     assert ei.value.stage == "retrieve"
@@ -149,11 +150,100 @@ def test_grade_falls_back_to_score_gate_when_llm_unavailable(monkeypatch):
     assert "fell back to score gate" in out["grade_reason"]
 
 
-def test_grade_still_refuses_on_score_gate_even_if_llm_would_fail(monkeypatch):
-    # Fallback must not resurrect a result the deterministic gate already rejected.
-    monkeypatch.setattr(graph_mod, "llm_grade", lambda *a, **k: (_ for _ in ()).throw(TimeoutError()))
-    out = graph_mod.grade({"question": "q", "hits": [_hit(1, config.GRADE_MIN_SCORE - 0.1)]})
+def test_score_gate_refuses_before_reranker_is_called(monkeypatch):
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("reranker must not run for weak vector recall")
+
+    monkeypatch.setattr(
+        graph_mod,
+        "_run_recall",
+        lambda *args, **kwargs: [_hit(1, config.GRADE_MIN_SCORE - 0.1)],
+    )
+    monkeypatch.setattr(graph_mod, "_run_rerank", must_not_run)
+
+    out = graph_mod.answer_question("q", rerank=True)
+
+    assert out["score_gate_passed"] is False
     assert out["grade"] == "irrelevant"
+    assert out["rerank_status"] == "off"
+    assert out["refused"] is True
+
+
+def test_rerank_node_surfaces_outcome_metadata(monkeypatch):
+    hits = [_hit(1, 0.9), _hit(2, 0.8)]
+    reranked = [_hit(1, 0.8), _hit(2, 0.9)]
+    reranked[0].retrieval_rank = 2
+    reranked[0].rerank_score = 0.98
+    outcome = RerankOutcome(reranked, "applied", "rerank-test", 12.5)
+    monkeypatch.setattr(graph_mod, "_run_rerank", lambda *args, **kwargs: outcome)
+
+    out = graph_mod.rerank({
+        "question": "q",
+        "strategy": "structure",
+        "candidates": hits,
+        "rerank": True,
+    })
+
+    assert out["hits"] == reranked
+    assert out["rerank_status"] == "applied"
+    assert out["rerank_model"] == "rerank-test"
+    assert out["rerank_latency_ms"] == 12.5
+
+
+def test_non_transient_rerank_error_becomes_pipeline_error(monkeypatch):
+    monkeypatch.setattr(
+        graph_mod,
+        "_run_rerank",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("invalid key")),
+    )
+    with pytest.raises(PipelineError) as ei:
+        graph_mod.rerank({
+            "question": "q",
+            "strategy": "structure",
+            "candidates": [_hit(1, 0.9)],
+            "rerank": True,
+        })
+    assert ei.value.stage == "rerank"
+
+
+def test_reranked_hits_all_ground_answer_but_vector_fallback_keeps_score_trim():
+    hits = [_hit(1, 0.90), _hit(2, 0.70), _hit(3, 0.40)]
+    assert graph_mod.select_grounding_hits(hits, "applied") == hits
+    assert [h.rank for h in graph_mod.select_grounding_hits(hits, "fallback")] == [1]
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_ranks"),
+    [("applied", [1, 2, 3]), ("fallback", [1])],
+)
+def test_generate_prompt_and_answer_hits_use_exact_selected_contexts(
+    monkeypatch, status, expected_ranks
+):
+    hits = [_hit(1, 0.90), _hit(2, 0.70), _hit(3, 0.40)]
+    captured = {}
+
+    class FakeChain:
+        def __or__(self, other):
+            return self
+
+        def invoke(self, payload):
+            captured.update(payload)
+            return "grounded answer"
+
+    monkeypatch.setattr(graph_mod, "ANSWER_PROMPT", FakeChain())
+    monkeypatch.setattr(graph_mod, "get_chat_llm", lambda: object())
+
+    out = graph_mod.generate({
+        "question": "q",
+        "hits": hits,
+        "rerank_status": status,
+    })
+
+    assert [hit.rank for hit in out["answer_hits"]] == expected_ranks
+    for rank in expected_ranks:
+        assert f"Some provision text {rank}." in captured["context"]
+    for rank in {1, 2, 3} - set(expected_ranks):
+        assert f"Some provision text {rank}." not in captured["context"]
 
 
 def test_generate_wraps_network_error_as_pipeline_error(monkeypatch):

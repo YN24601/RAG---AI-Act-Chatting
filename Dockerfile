@@ -1,6 +1,7 @@
 # Multi-stage image for the EU AI Act QA service (FastAPI + same-origin page).
 # Vector store stays in Qdrant Cloud, so the container is stateless — no data/.
-# Secrets (MISTRAL_API_KEY / QDRANT_URL / QDRANT_API_KEY) are injected at runtime.
+# Secrets (MISTRAL_API_KEY / QDRANT_URL / QDRANT_API_KEY / COHERE_API_KEY)
+# are injected at runtime. RERANK_MODE defaults to off unless explicitly enabled.
 
 # --- builder: install deps into an isolated prefix for a clean copy ---
 FROM python:3.11-slim AS builder

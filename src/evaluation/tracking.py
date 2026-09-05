@@ -36,7 +36,7 @@ def build_comparison_table(summaries: List[dict]) -> str:
     `summaries` is a list of per-strategy dicts (see scripts/evaluate.py) with keys
     `strategy`, `ragas`, `refusal`, `latency`. Pure — no I/O.
     """
-    cols = [s["strategy"] for s in summaries]
+    cols = [s.get("label", s["strategy"]) for s in summaries]
     header = "| metric | " + " | ".join(cols) + " |"
     sep = "| --- | " + " | ".join("---" for _ in cols) + " |"
     rows = [header, sep]
@@ -51,6 +51,17 @@ def build_comparison_table(summaries: List[dict]) -> str:
     rows.append(row("under-refusals (FN)", lambda s: str(s["refusal"]["false_negatives"])))
     rows.append(row("latency p95 (answer, s)", lambda s: f"{s['latency']['answer_branch']['p95']:.2f}"))
     rows.append(row("latency p95 (refuse, s)", lambda s: f"{s['latency']['refuse_branch']['p95']:.2f}"))
+    if any(s.get("retrieval") for s in summaries):
+        for key, label in (
+            ("candidate_recall_at_20", "candidate_recall@20"),
+            ("hit_rate_at_5", "hit_rate@5"),
+            ("reference_recall_at_5", "reference_recall@5"),
+            ("mrr_at_5", "MRR@5"),
+            ("ndcg_at_5", "nDCG@5"),
+        ):
+            rows.append(row(label, lambda s, k=key: f"{s.get('retrieval', {}).get(k, 0.0):.3f}"))
+    rows.append(row("rerank fallbacks", lambda s: str(s.get("rerank", {}).get("fallback_count", 0))))
+    rows.append(row("rerank latency mean (ms)", lambda s: f"{s.get('rerank', {}).get('latency_ms_mean', 0.0):.2f}"))
     return "\n".join(rows)
 
 
@@ -65,6 +76,10 @@ def _flat_metrics(summary: dict) -> dict:
     for branch in ("overall", "answer_branch", "refuse_branch"):
         m[f"latency_{branch}_mean"] = float(lat[branch]["mean"])
         m[f"latency_{branch}_p95"] = float(lat[branch]["p95"])
+    for key, value in summary.get("retrieval", {}).items():
+        m[f"retrieval_{key}"] = float(value)
+    for key, value in summary.get("rerank", {}).items():
+        m[f"rerank_{key}"] = float(value)
     return m
 
 
@@ -73,11 +88,28 @@ def _flat_metrics(summary: dict) -> dict:
 def _write_results_csv(path: Path, results) -> None:
     with path.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(["id", "category", "should_refuse", "refused", "grade", "latency_s", "error", "question", "answer"])
+        w.writerow([
+            "id", "category", "should_refuse", "refused", "grade", "latency_s",
+            "rerank_status", "rerank_model", "rerank_latency_ms", "rerank_failure_reason",
+            "candidate_ranking", "final_ranking", "error", "question", "answer",
+        ])
         for r in results:
+            encode_hits = lambda hits: json.dumps([
+                {
+                    "chunk_id": h.chunk_id,
+                    "rank": h.rank,
+                    "retrieval_rank": h.retrieval_rank,
+                    "score": h.score,
+                    "rerank_score": h.rerank_score,
+                }
+                for h in hits
+            ])
             w.writerow([
                 r.item.id, r.item.category, r.item.should_refuse, r.refused,
-                r.grade, r.latency_s, r.error, r.item.question, r.answer,
+                r.grade, r.latency_s, r.rerank_status, r.rerank_model,
+                r.rerank_latency_ms, r.rerank_failure_reason,
+                encode_hits(r.candidate_hits), encode_hits(r.final_hits),
+                r.error, r.item.question, r.answer,
             ])
 
 
@@ -104,15 +136,18 @@ def log_mlflow(summaries: List[dict], experiment: str = "aiact-rag-eval") -> Opt
             mlflow.log_artifact(str(cmp_path))
 
             for s in summaries:
-                with mlflow.start_run(run_name=s["strategy"], nested=True):
+                with mlflow.start_run(run_name=s.get("label", s["strategy"]), nested=True):
                     mlflow.log_params(s["params"])
                     mlflow.log_metrics(_flat_metrics(s))
-                    csv_path = Path(td) / f"results_{s['strategy']}.csv"
-                    json_path = Path(td) / f"results_{s['strategy']}.json"
+                    slug = s.get("label", s["strategy"]).replace("+", "_")
+                    csv_path = Path(td) / f"results_{slug}.csv"
+                    json_path = Path(td) / f"results_{slug}.json"
                     _write_results_csv(csv_path, s["results"])
                     json_path.write_text(json.dumps(
-                        {"strategy": s["strategy"], "ragas": s["ragas"],
-                         "refusal": s["refusal"], "latency": s["latency"]},
+                        {"strategy": s["strategy"], "label": s.get("label"),
+                         "ragas": s["ragas"], "refusal": s["refusal"],
+                         "latency": s["latency"], "retrieval": s.get("retrieval", {}),
+                         "rerank": s.get("rerank", {})},
                         indent=2), encoding="utf-8")
                     mlflow.log_artifact(str(csv_path))
                     mlflow.log_artifact(str(json_path))
